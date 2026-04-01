@@ -51,7 +51,8 @@ attribution_analysis/
 | 数据处理 | pandas + numpy | 持仓重建、收益率计算 |
 | 统计分析 | statsmodels | Alpha/Beta 回归分析 |
 | 可视化 | pyecharts | 生成交互式 HTML 图表 |
-| 文件读取 | openpyxl | 读取券商 Excel 导出 |
+| PDF 解析 | pdfplumber | 提取券商 PDF 交割单表格 |
+| 图片识别 | 多模态 LLM（备选） | 截图识别交割单 |
 
 ---
 
@@ -84,23 +85,63 @@ date,market,code,name,direction,quantity,price,amount,brokerage_fee,stamp_duty,t
 | net_amount | float | 实际收付金额（元，买入为负） | -168067.20 |
 | remark | str | 备注 | |
 
-### 3.2 券商数据转换
+### 3.2 数据导入方式
 
-**支持的券商格式**：
-- 华泰证券
-- 中信证券
-- 国泰君安
-- 其他（通用列映射）
+#### 方式1：PDF 解析（主路径）
 
-**转换脚本**：`convert_broker_data.py`
+券商导出 PDF 交割单，使用 pdfplumber 提取表格数据。
 
 ```python
 # 使用方式
 python scripts/convert_broker_data.py \
-    --input data/raw/华泰交割单.xlsx \
-    --broker huatai \
+    --input data/raw/交割单.pdf \
     --output data/trades.csv
 ```
+
+**实现**：
+```python
+import pdfplumber
+
+def parse_broker_pdf(pdf_path):
+    with pdfplumber.open(pdf_path) as pdf:
+        all_rows = []
+        for page in pdf.pages:
+            table = page.extract_table()
+            if table:
+                all_rows.extend(table[1:])  # 跳过表头
+    # 自动识别列名映射，转换为标准格式
+    return normalize_columns(all_rows)
+```
+
+**列名自动匹配**：
+- 脚本自动识别 PDF 表头（如"成交日期"/"Starting Date"）
+- 映射到标准字段名
+- 支持中英文混合表头
+
+
+#### 方式2：截图识别（备选）
+
+直接截图券商 APP 页面，使用多模态 LLM 提取数据。
+
+```python
+# 使用方式
+python scripts/convert_broker_data.py \
+    --input data/raw/screenshot.png \
+    --mode ocr \
+    --output data/trades.csv
+```
+
+**实现**：
+- 调用多模态 LLM API（DeepSeek-VL / 通义千问 VL / Claude）
+- Prompt：提取表格中的交割单数据，输出 JSON 格式
+- 自动转换为标准 CSV
+
+**成本**：约 ¥0.1-0.5 / 张图片
+
+**注意事项**：
+- 截图需完整包含表头和数据行
+- 识别结果会打印到终端供用户确认
+- 建议用于少量数据补录，大批量数据优先用 PDF
 
 ---
 
@@ -109,7 +150,7 @@ python scripts/convert_broker_data.py \
 ### 4.1 数据处理流程
 
 ```
-券商交割单 → 格式转换 → 持仓重建 → 收益率计算 → Alpha/Beta分离 → 报告生成
+券商PDF/截图 → 数据提取(pdfplumber/LLM) → 标准CSV → 持仓重建 → 收益率计算 → Alpha/Beta分离 → 报告生成
 ```
 
 ### 4.2 持仓重建算法

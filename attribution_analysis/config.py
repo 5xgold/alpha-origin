@@ -2,8 +2,8 @@
 
 # 基准配置
 BENCHMARK_INDEX = "000985"  # 中证全指
-RISK_FREE_RATE = 0.025      # 年化无风险利率 2.5%
-
+RISK_FREE_RATE = 0.018      # 年化无风险利率 1.8%
+    
 # 数据缓存
 CACHE_DIR = "data/cache"
 CACHE_EXPIRY_DAYS = 7

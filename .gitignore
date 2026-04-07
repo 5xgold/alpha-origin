@@ -1,5 +1,6 @@
 # Data folder
 attribution_analysis/data/
+attribution_analysis/output/
 
 # Python
 __pycache__/
@@ -25,6 +26,7 @@ wheels/
 
 # Virtual environments
 venv/
+.venv/
 ENV/
 env/
 

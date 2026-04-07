@@ -9,9 +9,6 @@ import pandas as pd
 import numpy as np
 import akshare as ak
 import statsmodels.api as sm
-from pyecharts import options as opts
-from pyecharts.charts import Line, Bar, Pie, Grid, Page
-from pyecharts.globals import ThemeType
 
 sys.path.append(str(Path(__file__).parent.parent))
 from config import (
@@ -39,37 +36,49 @@ def load_trades(csv_path):
 
 
 def get_stock_prices(code, start_date, end_date):
-    """获取股票历史行情（带缓存）- 保存完整 OHLCV 数据"""
-    # AKShare 需要6位代码
-    code_str = str(code).zfill(6)
+    """获取股票历史行情（带缓存）- 支持 A 股和港股"""
+    code_str = str(code).strip()
+    # 港股代码：5位纯数字（如 01810）
+    is_hk = len(code_str) == 5 and code_str.isdigit()
+    # A股代码补齐6位
+    if not is_hk:
+        code_str = code_str.zfill(6)
+
     cache_file = Path(CACHE_DIR) / f"{code_str}_{start_date}_{end_date}.csv"
     cache_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # 检查缓存
     if cache_file.exists():
         cache_time = datetime.fromtimestamp(cache_file.stat().st_mtime)
         if datetime.now() - cache_time < timedelta(days=CACHE_EXPIRY_DAYS):
             return pd.read_csv(cache_file, parse_dates=['date'])
 
-    # 从 AKShare 获取
     try:
-        df = ak.stock_zh_a_hist(symbol=code_str, start_date=start_date, end_date=end_date, adjust="qfq")
-        # 保留所有字段：日期、开盘、收盘、最高、最低、成交量、成交额、振幅、涨跌幅、涨跌额、换手率
-        df = df.rename(columns={
-            '日期': 'date',
-            '开盘': 'open',
-            '收盘': 'close',
-            '最高': 'high',
-            '最低': 'low',
-            '成交量': 'volume',
-            '成交额': 'amount',
-            '振幅': 'amplitude',
-            '涨跌幅': 'pct_change',
-            '涨跌额': 'change',
-            '换手率': 'turnover'
-        })
+        if is_hk:
+            df = ak.stock_hk_hist(symbol=code_str, start_date=start_date, end_date=end_date, adjust="qfq")
+            df = df.rename(columns={
+                '日期': 'date',
+                '开盘': 'open',
+                '收盘': 'close',
+                '最高': 'high',
+                '最低': 'low',
+                '成交量': 'volume',
+            })
+        else:
+            df = ak.stock_zh_a_hist(symbol=code_str, start_date=start_date, end_date=end_date, adjust="qfq")
+            df = df.rename(columns={
+                '日期': 'date',
+                '开盘': 'open',
+                '收盘': 'close',
+                '最高': 'high',
+                '最低': 'low',
+                '成交量': 'volume',
+                '成交额': 'amount',
+                '振幅': 'amplitude',
+                '涨跌幅': 'pct_change',
+                '涨跌额': 'change',
+                '换手率': 'turnover'
+            })
         df['date'] = pd.to_datetime(df['date'])
-        # 保存所有列
         df.to_csv(cache_file, index=False)
         return df
     except Exception as e:
@@ -88,8 +97,19 @@ def get_benchmark_prices(start_date, end_date):
             return pd.read_csv(cache_file, parse_dates=['date'])
 
     try:
-        df = ak.stock_zh_index_daily(symbol=f"sh{BENCHMARK_INDEX}")
-        # 保留所有字段
+        # 尝试 sh/sz 两个前缀，兼容沪深指数
+        df = None
+        for prefix in ['sz', 'sh']:
+            try:
+                df = ak.stock_zh_index_daily(symbol=f"{prefix}{BENCHMARK_INDEX}")
+                if df is not None and not df.empty:
+                    break
+            except Exception:
+                continue
+
+        if df is None or df.empty:
+            raise ValueError(f"无法获取指数 {BENCHMARK_INDEX} 数据")
+
         df = df.rename(columns={
             'date': 'date',
             'open': 'open',
@@ -99,8 +119,13 @@ def get_benchmark_prices(start_date, end_date):
             'volume': 'volume'
         })
         df['date'] = pd.to_datetime(df['date'])
-        df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
-        # 保存所有列
+        start_dt = pd.to_datetime(start_date, format='%Y%m%d')
+        end_dt = pd.to_datetime(end_date, format='%Y%m%d')
+        df = df[(df['date'] >= start_dt) & (df['date'] <= end_dt)]
+
+        if df.empty:
+            raise ValueError(f"指数 {BENCHMARK_INDEX} 在 {start_date}~{end_date} 无数据")
+
         df.to_csv(cache_file, index=False)
         return df
     except Exception as e:
@@ -109,43 +134,72 @@ def get_benchmark_prices(start_date, end_date):
 
 
 def rebuild_positions(trades_df):
-    """重建每日持仓"""
-    positions = {}  # {code: {'quantity': int, 'cost_basis': float}}
-    daily_snapshots = []
+    """重建每日持仓（含现金），自动识别期初已持有的股票"""
+    # 第一步：扫描所有交易，识别期初持仓
+    # 如果某只股票在卖出前从未买入过，说明是期初就持有的
+    pre_existing = {}  # {code: quantity}
+    running_qty = {}   # {code: cumulative_quantity}
 
-    # 获取所有交易日期
+    for _, trade in trades_df.iterrows():
+        code = trade['code']
+        if code not in running_qty:
+            running_qty[code] = 0
+
+        if trade['direction'] == '买入':
+            running_qty[code] += trade['quantity']
+        elif trade['direction'] == '卖出':
+            running_qty[code] -= abs(trade['quantity'])
+
+        # 如果累计数量为负，说明卖了期初持仓
+        if running_qty[code] < 0:
+            needed = abs(running_qty[code])
+            if code not in pre_existing or needed > pre_existing[code]:
+                pre_existing[code] = needed
+
+    if pre_existing:
+        print(f"检测到期初持仓: {', '.join(f'{c}x{q}' for c, q in pre_existing.items())}")
+
+    # 第二步：初始化持仓（期初股票）
+    positions = {}
+    for code, qty in pre_existing.items():
+        positions[code] = {'quantity': qty, 'cost_basis': 0.0}
+
+    cash = 0.0
+    daily_snapshots = []
     trade_dates = trades_df['date'].unique()
 
     for date in trade_dates:
         day_trades = trades_df[trades_df['date'] == date]
 
-        # 处理当日交易
         for _, trade in day_trades.iterrows():
             code = trade['code']
             if code not in positions:
                 positions[code] = {'quantity': 0, 'cost_basis': 0.0}
 
+            # 现金流：买入花钱（减少），卖出收钱（增加）
+            if trade['direction'] == '买入':
+                cash -= abs(trade['net_amount'])
+            else:
+                cash += abs(trade['net_amount'])
+
             if trade['direction'] == '买入':
                 positions[code]['quantity'] += trade['quantity']
                 positions[code]['cost_basis'] += abs(trade['net_amount'])
             elif trade['direction'] == '卖出':
-                sell_qty = abs(trade['quantity'])  # 卖出数量为正
+                sell_qty = abs(trade['quantity'])
                 positions[code]['quantity'] -= sell_qty
-                # 成本按比例减少
                 if positions[code]['quantity'] > 0:
-                    # 还有剩余持仓，按比例减少成本
                     original_qty = positions[code]['quantity'] + sell_qty
                     if original_qty > 0:
                         ratio = sell_qty / original_qty
                         positions[code]['cost_basis'] *= (1 - ratio)
                 else:
-                    # 全部卖出，成本归零
                     positions[code]['cost_basis'] = 0.0
 
-        # 记录当日持仓快照
         snapshot = {
             'date': date,
-            'positions': {k: v.copy() for k, v in positions.items() if v['quantity'] > 0}
+            'positions': {k: v.copy() for k, v in positions.items() if v['quantity'] > 0},
+            'cash': cash
         }
         daily_snapshots.append(snapshot)
 
@@ -153,7 +207,7 @@ def rebuild_positions(trades_df):
 
 
 def calculate_portfolio_value(snapshots, start_date, end_date):
-    """计算每日组合市值"""
+    """计算每日组合市值（持仓市值 + 现金）"""
     # 获取所有持仓股票的行情
     all_codes = set()
     for snap in snapshots:
@@ -166,18 +220,24 @@ def calculate_portfolio_value(snapshots, start_date, end_date):
         if not prices.empty:
             stock_prices[code] = prices.set_index('date')['close']
 
-    # 计算每日市值
+    # 计算每日市值（持仓 + 现金）
     daily_values = []
     for snap in snapshots:
         date = snap['date']
-        total_value = 0.0
+        stock_value = 0.0
 
         for code, pos in snap['positions'].items():
             if code in stock_prices and date in stock_prices[code].index:
                 price = stock_prices[code].loc[date]
-                total_value += price * pos['quantity']
+                stock_value += price * pos['quantity']
 
-        daily_values.append({'date': date, 'value': total_value})
+        total_value = stock_value + snap.get('cash', 0.0)
+        daily_values.append({
+            'date': date,
+            'value': total_value,
+            'stock_value': stock_value,
+            'cash': snap.get('cash', 0.0)
+        })
 
     return pd.DataFrame(daily_values)
 
@@ -192,21 +252,8 @@ def calculate_returns(portfolio_values, benchmark_prices, trades_df):
     df['value'] = df['value'].ffill()
     df['close'] = df['close'].ffill()
 
-    # 计算现金流
-    df['cashflow'] = 0.0
-    for _, trade in trades_df.iterrows():
-        mask = df['date'] == trade['date']
-        df.loc[mask, 'cashflow'] += trade['net_amount']
-
-    # 计算组合收益率
-    df['portfolio_return'] = 0.0
-    for i in range(1, len(df)):
-        prev_value = df.loc[i-1, 'value']
-        curr_value = df.loc[i, 'value']
-        cashflow = df.loc[i, 'cashflow']
-
-        if prev_value > 0:
-            df.loc[i, 'portfolio_return'] = (curr_value - prev_value - cashflow) / prev_value
+    # 计算组合收益率（value 已包含现金，直接计算）
+    df['portfolio_return'] = df['value'].pct_change().fillna(0)
 
     # 计算基准收益率
     df['benchmark_return'] = df['close'].pct_change().fillna(0)
@@ -236,12 +283,17 @@ def alpha_beta_analysis(returns_df):
         raise ValueError(f"交易日数量不足（{len(valid)} < {MIN_TRADING_DAYS}）")
 
     # OLS 回归
-    X = sm.add_constant(valid['excess_benchmark'].values)
+    X = sm.add_constant(valid['excess_benchmark'].values, has_constant='add')
     y = valid['excess_portfolio'].values
     model = sm.OLS(y, X).fit()
 
-    alpha_daily = model.params[0]
-    beta = model.params[1]
+    if len(model.params) < 2:
+        # 数据波动不足，无法拟合 Beta
+        alpha_daily = model.params[0]
+        beta = 0.0
+    else:
+        alpha_daily = model.params[0]
+        beta = model.params[1]
     r_squared = model.rsquared
 
     # 年化 Alpha
@@ -320,27 +372,14 @@ def print_terminal_report(results, start_date, end_date):
     print("=" * 50)
 
 
-def generate_html_report(returns_df, results, output_path):
-    """生成 HTML 报告"""
-    # 1. 净值曲线
+def generate_md_report(returns_df, results, output_path, start_date, end_date):
+    """生成 Markdown 报告"""
+    # 净值序列
     cumulative_portfolio = (1 + returns_df['portfolio_return']).cumprod()
     cumulative_benchmark = (1 + returns_df['benchmark_return']).cumprod()
 
-    line_chart = (
-        Line(init_opts=opts.InitOpts(theme=ThemeType.LIGHT, width="1200px", height="400px"))
-        .add_xaxis(returns_df['date'].dt.strftime('%Y-%m-%d').tolist())
-        .add_yaxis("组合净值", cumulative_portfolio.tolist(), is_smooth=True)
-        .add_yaxis("基准净值", cumulative_benchmark.tolist(), is_smooth=True)
-        .set_global_opts(
-            title_opts=opts.TitleOpts(title="净值曲线"),
-            tooltip_opts=opts.TooltipOpts(trigger="axis"),
-            xaxis_opts=opts.AxisOpts(type_="category"),
-            yaxis_opts=opts.AxisOpts(name="净值"),
-            datazoom_opts=[opts.DataZoomOpts(range_start=0, range_end=100)],
-        )
-    )
-
-    # 2. 月度超额收益
+    # 月度收益
+    returns_df = returns_df.copy()
     returns_df['month'] = returns_df['date'].dt.to_period('M')
     monthly = returns_df.groupby('month').agg({
         'portfolio_return': lambda x: (1 + x).prod() - 1,
@@ -348,45 +387,88 @@ def generate_html_report(returns_df, results, output_path):
     })
     monthly['excess'] = monthly['portfolio_return'] - monthly['benchmark_return']
 
-    bar_chart = (
-        Bar(init_opts=opts.InitOpts(theme=ThemeType.LIGHT, width="1200px", height="400px"))
-        .add_xaxis(monthly.index.astype(str).tolist())
-        .add_yaxis("月度超额收益", (monthly['excess'] * 100).tolist())
-        .set_global_opts(
-            title_opts=opts.TitleOpts(title="月度超额收益"),
-            tooltip_opts=opts.TooltipOpts(trigger="axis", formatter="{b}: {c}%"),
-            xaxis_opts=opts.AxisOpts(type_="category"),
-            yaxis_opts=opts.AxisOpts(name="超额收益 (%)"),
-        )
-    )
+    # 收益归因
+    beta_contrib = results['benchmark_total'] * results['beta']
+    alpha_contrib = results['total_return'] - beta_contrib
 
-    # 3. 滚动 Beta
-    rolling_beta = []
-    for i in range(ROLLING_WINDOW, len(returns_df)):
-        window = returns_df.iloc[i-ROLLING_WINDOW:i]
-        X = sm.add_constant(window['excess_benchmark'])
-        model = sm.OLS(window['excess_portfolio'], X).fit()
-        rolling_beta.append(model.params[1])
+    # Alpha/Beta 评价
+    alpha_tag = "✓ 策略有效" if results['alpha_annual'] > 0 else "✗ 策略失效"
+    beta_tag = "✓ 正常" if 0.5 < results['beta'] < 1.5 else "⚠ 异常"
+    r2_tag = "✓ 良好" if results['r_squared'] > 0.7 else "⚠ 拟合度低"
 
-    beta_dates = returns_df['date'].iloc[ROLLING_WINDOW:].dt.strftime('%Y-%m-%d').tolist()
-    beta_chart = (
-        Line(init_opts=opts.InitOpts(theme=ThemeType.LIGHT, width="1200px", height="400px"))
-        .add_xaxis(beta_dates)
-        .add_yaxis("滚动 Beta (60日)", rolling_beta, is_smooth=True)
-        .set_global_opts(
-            title_opts=opts.TitleOpts(title="滚动 Beta"),
-            tooltip_opts=opts.TooltipOpts(trigger="axis"),
-            xaxis_opts=opts.AxisOpts(type_="category"),
-            yaxis_opts=opts.AxisOpts(name="Beta"),
-            datazoom_opts=[opts.DataZoomOpts(range_start=0, range_end=100)],
-        )
-    )
+    # 结论
+    if results['alpha_annual'] > 0:
+        conclusion = "策略表现优异，Alpha 显著为正。"
+        if results['benchmark_total'] < 0:
+            conclusion += "在下跌市场中仍获得正收益，风控有效。"
+    else:
+        conclusion = "策略表现不佳，Alpha 为负。"
+        if results['beta'] > 1:
+            conclusion += "市场敏感度过高，放大了市场波动。"
 
-    # 组合页面
-    page = Page(layout=Page.SimplePageLayout)
-    page.add(line_chart, bar_chart, beta_chart)
-    page.render(output_path)
+    lines = []
+    lines.append(f"# {REPORT_TITLE}")
+    lines.append(f"")
+    lines.append(f"分析区间：{start_date.strftime('%Y-%m-%d')} 至 {end_date.strftime('%Y-%m-%d')}")
+    lines.append(f"")
 
+    # 核心指标
+    lines.append(f"## 核心指标")
+    lines.append(f"")
+    lines.append(f"| 指标 | 数值 | 评价 |")
+    lines.append(f"|------|------|------|")
+    lines.append(f"| 组合总收益率 | {results['total_return']:+.2%} | |")
+    lines.append(f"| 基准总收益率 | {results['benchmark_total']:+.2%} | |")
+    lines.append(f"| 超额收益率 | {results['excess_return']:+.2%} | |")
+    lines.append(f"| Alpha（年化） | {results['alpha_annual']:+.2%} | {alpha_tag} |")
+    lines.append(f"| Beta | {results['beta']:.2f} | {beta_tag} |")
+    lines.append(f"| R² | {results['r_squared']:.2f} | {r2_tag} |")
+    lines.append(f"| 夏普比率 | {results['sharpe']:.2f} | |")
+    lines.append(f"| 最大回撤 | {results['max_drawdown']:.2%} | |")
+    lines.append(f"| 年化波动率 | {results['volatility']:.2%} | |")
+    lines.append(f"")
+
+    # 收益归因
+    lines.append(f"## 收益归因")
+    lines.append(f"")
+    lines.append(f"| 来源 | 贡献 |")
+    lines.append(f"|------|------|")
+    lines.append(f"| 市场贡献（Beta） | {beta_contrib:+.2%} |")
+    lines.append(f"| 策略贡献（Alpha） | {alpha_contrib:+.2%} |")
+    lines.append(f"")
+
+    # 每日净值
+    lines.append(f"## 每日净值")
+    lines.append(f"")
+    lines.append(f"| 日期 | 组合净值 | 基准净值 | 组合日收益 | 基准日收益 |")
+    lines.append(f"|------|----------|----------|------------|------------|")
+    for i, row in returns_df.iterrows():
+        date_str = row['date'].strftime('%Y-%m-%d')
+        pnv = cumulative_portfolio.iloc[i]
+        bnv = cumulative_benchmark.iloc[i]
+        pr = row['portfolio_return']
+        br = row['benchmark_return']
+        lines.append(f"| {date_str} | {pnv:.4f} | {bnv:.4f} | {pr:+.2%} | {br:+.2%} |")
+    lines.append(f"")
+
+    # 月度超额收益
+    if len(monthly) > 0:
+        lines.append(f"## 月度超额收益")
+        lines.append(f"")
+        lines.append(f"| 月份 | 组合收益 | 基准收益 | 超额收益 |")
+        lines.append(f"|------|----------|----------|----------|")
+        for month, row in monthly.iterrows():
+            lines.append(f"| {month} | {row['portfolio_return']:+.2%} | {row['benchmark_return']:+.2%} | {row['excess']:+.2%} |")
+        lines.append(f"")
+
+    # 结论
+    lines.append(f"## 结论")
+    lines.append(f"")
+    lines.append(conclusion)
+    lines.append(f"")
+
+    md_content = "\n".join(lines)
+    Path(output_path).write_text(md_content, encoding='utf-8')
     print(f"\n详细报告已生成：{output_path}")
 
 
@@ -395,7 +477,7 @@ def main():
     parser.add_argument("--trades", required=True, help="交割单 CSV 路径")
     parser.add_argument("--start-date", help="开始日期 (YYYY-MM-DD)")
     parser.add_argument("--end-date", help="结束日期 (YYYY-MM-DD)")
-    parser.add_argument("--output", help="输出 HTML 路径")
+    parser.add_argument("--output", help="输出报告路径 (.md)")
 
     args = parser.parse_args()
 
@@ -432,10 +514,10 @@ def main():
     if args.output:
         output_path = args.output
     else:
-        output_path = f"{OUTPUT_DIR}/{datetime.now().strftime('%Y-%m-%d')}_report.html"
+        output_path = f"{OUTPUT_DIR}/{datetime.now().strftime('%Y-%m-%d')}_report.md"
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    generate_html_report(returns_df, results, output_path)
+    generate_md_report(returns_df, results, output_path, start, end)
 
 
 if __name__ == "__main__":

@@ -4,18 +4,18 @@ import sys
 import argparse
 import json
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 import pandas as pd
 import numpy as np
-import akshare as ak
 import statsmodels.api as sm
 
 sys.path.append(str(Path(__file__).parent.parent))
 from config import (
-    BENCHMARK_INDEX, RISK_FREE_RATE, CACHE_DIR,
-    CACHE_EXPIRY_DAYS, ROLLING_WINDOW, MIN_TRADING_DAYS,
+    BENCHMARK_INDEX, RISK_FREE_RATE,
+    ROLLING_WINDOW, MIN_TRADING_DAYS,
     REPORT_TITLE, OUTPUT_DIR
 )
+from scripts.data_provider import get_stock_prices, get_benchmark_prices
 from scripts.brinson import brinson_analysis
 
 
@@ -36,134 +36,81 @@ def load_trades(csv_path):
     return df
 
 
-def get_stock_prices(code, start_date, end_date):
-    """获取股票历史行情（带缓存）- 支持 A 股和港股"""
-    code_str = str(code).strip()
-    # 港股代码：5位纯数字（如 01810）
-    is_hk = len(code_str) == 5 and code_str.isdigit()
-    # A股代码补齐6位
-    if not is_hk:
-        code_str = code_str.zfill(6)
+def rebuild_positions(trades_df, holdings_df=None):
+    """重建每日持仓（含现金）
 
-    cache_file = Path(CACHE_DIR) / f"{code_str}_{start_date}_{end_date}.csv"
-    cache_file.parent.mkdir(parents=True, exist_ok=True)
-
-    if cache_file.exists():
-        cache_time = datetime.fromtimestamp(cache_file.stat().st_mtime)
-        if datetime.now() - cache_time < timedelta(days=CACHE_EXPIRY_DAYS):
-            return pd.read_csv(cache_file, parse_dates=['date'])
-
-    try:
-        if is_hk:
-            df = ak.stock_hk_hist(symbol=code_str, start_date=start_date, end_date=end_date, adjust="qfq")
-            df = df.rename(columns={
-                '日期': 'date',
-                '开盘': 'open',
-                '收盘': 'close',
-                '最高': 'high',
-                '最低': 'low',
-                '成交量': 'volume',
-            })
-        else:
-            df = ak.stock_zh_a_hist(symbol=code_str, start_date=start_date, end_date=end_date, adjust="qfq")
-            df = df.rename(columns={
-                '日期': 'date',
-                '开盘': 'open',
-                '收盘': 'close',
-                '最高': 'high',
-                '最低': 'low',
-                '成交量': 'volume',
-                '成交额': 'amount',
-                '振幅': 'amplitude',
-                '涨跌幅': 'pct_change',
-                '涨跌额': 'change',
-                '换手率': 'turnover'
-            })
-        df['date'] = pd.to_datetime(df['date'])
-        df.to_csv(cache_file, index=False)
-        return df
-    except Exception as e:
-        print(f"警告: 获取 {code_str} 行情失败: {e}")
-        return pd.DataFrame(columns=['date', 'open', 'high', 'low', 'close', 'volume'])
-
-
-def get_benchmark_prices(start_date, end_date):
-    """获取基准指数行情（带缓存）- 保存完整 OHLCV 数据"""
-    cache_file = Path(CACHE_DIR) / f"benchmark_{BENCHMARK_INDEX}_{start_date}_{end_date}.csv"
-    cache_file.parent.mkdir(parents=True, exist_ok=True)
-
-    if cache_file.exists():
-        cache_time = datetime.fromtimestamp(cache_file.stat().st_mtime)
-        if datetime.now() - cache_time < timedelta(days=CACHE_EXPIRY_DAYS):
-            return pd.read_csv(cache_file, parse_dates=['date'])
-
-    try:
-        # 尝试 sh/sz 两个前缀，兼容沪深指数
-        df = None
-        for prefix in ['sz', 'sh']:
-            try:
-                df = ak.stock_zh_index_daily(symbol=f"{prefix}{BENCHMARK_INDEX}")
-                if df is not None and not df.empty:
-                    break
-            except Exception:
-                continue
-
-        if df is None or df.empty:
-            raise ValueError(f"无法获取指数 {BENCHMARK_INDEX} 数据")
-
-        df = df.rename(columns={
-            'date': 'date',
-            'open': 'open',
-            'close': 'close',
-            'high': 'high',
-            'low': 'low',
-            'volume': 'volume'
-        })
-        df['date'] = pd.to_datetime(df['date'])
-        start_dt = pd.to_datetime(start_date, format='%Y%m%d')
-        end_dt = pd.to_datetime(end_date, format='%Y%m%d')
-        df = df[(df['date'] >= start_dt) & (df['date'] <= end_dt)]
-
-        if df.empty:
-            raise ValueError(f"指数 {BENCHMARK_INDEX} 在 {start_date}~{end_date} 无数据")
-
-        df.to_csv(cache_file, index=False)
-        return df
-    except Exception as e:
-        print(f"错误: 获取基准指数失败: {e}")
-        sys.exit(1)
-
-
-def rebuild_positions(trades_df):
-    """重建每日持仓（含现金），自动识别期初已持有的股票"""
-    # 第一步：扫描所有交易，识别期初持仓
-    # 如果某只股票在卖出前从未买入过，说明是期初就持有的
-    pre_existing = {}  # {code: quantity}
-    running_qty = {}   # {code: cumulative_quantity}
-
-    for _, trade in trades_df.iterrows():
-        code = trade['code']
-        if code not in running_qty:
-            running_qty[code] = 0
-
-        if trade['direction'] == '买入':
-            running_qty[code] += trade['quantity']
-        elif trade['direction'] == '卖出':
-            running_qty[code] -= abs(trade['quantity'])
-
-        # 如果累计数量为负，说明卖了期初持仓
-        if running_qty[code] < 0:
-            needed = abs(running_qty[code])
-            if code not in pre_existing or needed > pre_existing[code]:
-                pre_existing[code] = needed
-
-    if pre_existing:
-        print(f"检测到期初持仓: {', '.join(f'{c}x{q}' for c, q in pre_existing.items())}")
-
-    # 第二步：初始化持仓（期初股票）
+    Args:
+        trades_df: 交易记录
+        holdings_df: 最新持仓 DataFrame[code, name, quantity, cost_price]，
+                     来自对账单「客户持股清单」（打印日期的持仓快照）。
+                     若提供，则从最新持仓反推期初持仓，再正向重放交易。
+                     若不提供，则从卖出记录推断期初持仓（成本为0）。
+    """
     positions = {}
-    for code, qty in pre_existing.items():
-        positions[code] = {'quantity': qty, 'cost_basis': 0.0}
+
+    if holdings_df is not None:
+        # 持股清单是最新持仓，需要反推期初持仓：
+        # 期初持仓 = 最新持仓 - 期间买入 + 期间卖出
+        latest = {}
+        for _, row in holdings_df.iterrows():
+            code = str(row['code']).strip()
+            latest[code] = {
+                'quantity': int(row['quantity']),
+                'cost_price': float(row.get('cost_price', 0)),
+                'name': str(row.get('name', '')),
+            }
+
+        # 计算期间每只股票的净买入量
+        net_bought = {}  # code → net quantity change (买入为正, 卖出为负)
+        for _, trade in trades_df.iterrows():
+            code = str(trade['code']).strip()
+            if trade['direction'] == '买入':
+                net_bought[code] = net_bought.get(code, 0) + trade['quantity']
+            elif trade['direction'] == '卖出':
+                net_bought[code] = net_bought.get(code, 0) - abs(trade['quantity'])
+
+        # 反推期初持仓
+        all_codes = set(list(latest.keys()) + list(net_bought.keys()))
+        for code in all_codes:
+            latest_qty = latest.get(code, {}).get('quantity', 0)
+            net_change = net_bought.get(code, 0)
+            initial_qty = latest_qty - net_change  # 期初 = 最新 - 净买入
+
+            if initial_qty > 0:
+                cost_price = latest.get(code, {}).get('cost_price', 0)
+                name = latest.get(code, {}).get('name', '')
+                positions[code] = {
+                    'quantity': initial_qty,
+                    'cost_basis': cost_price * initial_qty,
+                    'name': name,
+                }
+
+        print(f"从最新持仓反推期初持仓: {', '.join(f'{c}x{v['quantity']}' for c, v in positions.items())}")
+    else:
+        # 从卖出记录反推期初持仓（无成本信息）
+        pre_existing = {}
+        running_qty = {}
+
+        for _, trade in trades_df.iterrows():
+            code = trade['code']
+            if code not in running_qty:
+                running_qty[code] = 0
+
+            if trade['direction'] == '买入':
+                running_qty[code] += trade['quantity']
+            elif trade['direction'] == '卖出':
+                running_qty[code] -= abs(trade['quantity'])
+
+            if running_qty[code] < 0:
+                needed = abs(running_qty[code])
+                if code not in pre_existing or needed > pre_existing[code]:
+                    pre_existing[code] = needed
+
+        if pre_existing:
+            print(f"检测到期初持仓: {', '.join(f'{c}x{q}' for c, q in pre_existing.items())}")
+
+        for code, qty in pre_existing.items():
+            positions[code] = {'quantity': qty, 'cost_basis': 0.0, 'name': ''}
 
     cash = 0.0
     daily_snapshots = []
@@ -175,7 +122,11 @@ def rebuild_positions(trades_df):
         for _, trade in day_trades.iterrows():
             code = trade['code']
             if code not in positions:
-                positions[code] = {'quantity': 0, 'cost_basis': 0.0}
+                positions[code] = {'quantity': 0, 'cost_basis': 0.0, 'name': ''}
+
+            # 记录股票名称
+            if trade.get('name') and not positions[code]['name']:
+                positions[code]['name'] = trade['name']
 
             # 现金流：买入花钱（减少），卖出收钱（增加）
             if trade['direction'] == '买入':
@@ -543,6 +494,7 @@ def generate_md_report(returns_df, results, output_path, start_date, end_date, b
 def main():
     parser = argparse.ArgumentParser(description="策略归因分析")
     parser.add_argument("--trades", required=True, help="交割单 CSV 路径")
+    parser.add_argument("--holdings", help="最新持仓 CSV 路径（对账单持股清单，用于反推期初持仓）")
     parser.add_argument("--start-date", help="开始日期 (YYYY-MM-DD)")
     parser.add_argument("--end-date", help="结束日期 (YYYY-MM-DD)")
     parser.add_argument("--output", help="输出报告路径 (.md)")
@@ -553,12 +505,17 @@ def main():
     print("正在加载交割单...")
     trades = load_trades(args.trades)
 
+    holdings_df = None
+    if args.holdings:
+        print(f"正在加载最新持仓: {args.holdings}")
+        holdings_df = pd.read_csv(args.holdings, dtype={'code': str})
+
     start = pd.to_datetime(args.start_date) if args.start_date else trades['date'].min()
     end = pd.to_datetime(args.end_date) if args.end_date else trades['date'].max()
 
     # 2. 重建持仓
     print("正在重建持仓...")
-    snapshots = rebuild_positions(trades)
+    snapshots = rebuild_positions(trades, holdings_df=holdings_df)
 
     # 3. 计算市值
     print("正在计算组合市值...")
@@ -566,7 +523,7 @@ def main():
 
     # 4. 获取基准数据
     print("正在获取基准指数数据...")
-    benchmark_prices = get_benchmark_prices(start.strftime('%Y%m%d'), end.strftime('%Y%m%d'))
+    benchmark_prices = get_benchmark_prices(BENCHMARK_INDEX, start.strftime('%Y%m%d'), end.strftime('%Y%m%d'))
 
     # 5. 计算收益率
     print("正在计算收益率...")

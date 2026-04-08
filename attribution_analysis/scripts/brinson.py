@@ -11,117 +11,10 @@ import json
 from pathlib import Path
 from datetime import datetime, timedelta
 import pandas as pd
-import akshare as ak
 
 sys.path.append(str(Path(__file__).parent.parent))
 from config import CACHE_DIR, SECTOR_CACHE_DAYS, BENCHMARK_INDEX
-
-# ETF 行业映射（名称关键词 → 申万一级行业）
-ETF_SECTOR_MAP = {
-    # 行业ETF
-    "券商": "非银金融", "证券": "非银金融", "保险": "非银金融", "金融": "非银金融",
-    "银行": "银行",
-    "医药": "医药生物", "医疗": "医药生物", "生物": "医药生物", "创新药": "医药生物",
-    "白酒": "食品饮料", "食品": "食品饮料", "消费": "食品饮料",
-    "军工": "国防军工", "国防": "国防军工",
-    "新能源": "电力设备", "光伏": "电力设备", "锂电": "电力设备", "储能": "电力设备",
-    "电力": "公用事业",
-    "芯片": "电子", "半导体": "电子", "电子": "电子",
-    "计算机": "计算机", "软件": "计算机", "信息技术": "计算机", "云计算": "计算机",
-    "互联网": "传媒", "传媒": "传媒", "游戏": "传媒",
-    "通信": "通信", "5G": "通信",
-    "地产": "房地产", "房地产": "房地产",
-    "建筑": "建筑装饰", "建材": "建筑装饰",
-    "钢铁": "钢铁",
-    "煤炭": "煤炭",
-    "有色": "有色金属", "稀土": "有色金属",
-    "化工": "基础化工",
-    "汽车": "汽车", "新能源车": "汽车",
-    "家电": "家用电器",
-    "农业": "农林牧渔", "养殖": "农林牧渔", "猪": "农林牧渔",
-    "机械": "机械设备", "机器人": "机械设备",
-    "交通": "交通运输", "物流": "交通运输", "航运": "交通运输",
-    "纺织": "纺织服饰",
-    "商贸": "商贸零售",
-    "环保": "环保",
-    "石油": "石油石化", "石化": "石油石化",
-    "美容": "美容护理",
-}
-
-# 宽基ETF关键词
-BROAD_ETF_KEYWORDS = [
-    "沪深300", "中证500", "中证1000", "上证50", "创业板", "科创",
-    "红利", "价值", "成长", "MSCI", "恒生", "纳斯达克", "标普",
-]
-
-
-def get_stock_sector(code, name=""):
-    """获取个股申万一级行业（带缓存）
-
-    Args:
-        code: 股票代码
-        name: 股票名称（用于 ETF 行业推断）
-
-    Returns:
-        行业名称字符串
-    """
-    code_str = str(code).strip()
-    is_hk = len(code_str) == 5 and code_str.isdigit()
-
-    # 港股 → 境外
-    if is_hk:
-        return "境外"
-
-    code_str = code_str.zfill(6)
-
-    # ETF 判断（代码以 51/15/16/56/58/59 开头）
-    etf_prefixes = ("51", "15", "16", "56", "58", "59")
-    if code_str[:2] in etf_prefixes:
-        return _classify_etf(name)
-
-    # 查缓存
-    cache_file = Path(CACHE_DIR) / "sectors" / f"{code_str}.json"
-    cache_file.parent.mkdir(parents=True, exist_ok=True)
-
-    if cache_file.exists():
-        cache_time = datetime.fromtimestamp(cache_file.stat().st_mtime)
-        if datetime.now() - cache_time < timedelta(days=SECTOR_CACHE_DAYS):
-            data = json.loads(cache_file.read_text())
-            return data.get("sector", "其他")
-
-    # 调用 akshare 获取行业
-    try:
-        info = ak.stock_individual_info_em(symbol=code_str)
-        # info 是 DataFrame，有 item 和 value 两列
-        sector = "其他"
-        for _, row in info.iterrows():
-            if "行业" in str(row.get("item", "")):
-                sector = str(row["value"])
-                break
-
-        cache_file.write_text(json.dumps({"sector": sector, "code": code_str}, ensure_ascii=False))
-        return sector
-    except Exception as e:
-        print(f"  警告: 获取 {code_str} 行业失败: {e}")
-        return "其他"
-
-
-def _classify_etf(name):
-    """根据 ETF 名称推断行业"""
-    if not name:
-        return "指数"
-
-    # 先检查是否宽基
-    for kw in BROAD_ETF_KEYWORDS:
-        if kw in name:
-            return "指数"
-
-    # 行业 ETF 匹配
-    for kw, sector in ETF_SECTOR_MAP.items():
-        if kw in name:
-            return sector
-
-    return "指数"
+from scripts.data_provider import get_stock_sector, get_sw_sector_returns, get_index_constituents
 
 
 def classify_portfolio_sectors(snapshots, start_date, end_date, stock_prices_cache=None):
@@ -264,7 +157,7 @@ def get_benchmark_sector_data(benchmark_index, start_date, end_date):
     # 获取申万一级行业指数列表和收益
     sector_result = {}
     try:
-        sector_result = _get_sw_sector_returns(start_date, end_date)
+        sector_result = get_sw_sector_returns(start_date, end_date)
     except Exception as e:
         print(f"  警告: 获取申万行业指数失败: {e}")
 
@@ -299,44 +192,8 @@ def get_benchmark_sector_data(benchmark_index, start_date, end_date):
     return merged
 
 
-def _get_sw_sector_returns(start_date, end_date):
-    """获取申万一级行业指数收益率"""
-    result = {}
-    try:
-        # 尝试获取中证全指成分股行业权重（可能不可用）
-        ak.index_stock_cons_weight_csindex(symbol="000985")
-    except Exception:
-        pass
-
-    try:
-        # 使用申万行业指数日线数据
-        sw_index = ak.sw_index_first_info()
-
-        for _, row in sw_index.iterrows():
-            sector_name = str(row.get("行业名称", ""))
-            sector_code = str(row.get("行业代码", ""))
-            if not sector_code or not sector_name:
-                continue
-
-            try:
-                hist = ak.sw_index_daily(symbol=sector_code, start_date=start_date, end_date=end_date)
-                if hist is not None and len(hist) >= 2:
-                    # 计算区间收益率
-                    first_close = float(hist.iloc[0]["收盘"])
-                    last_close = float(hist.iloc[-1]["收盘"])
-                    ret = (last_close - first_close) / first_close
-                    result[sector_name] = {"return": ret, "weight": 0}
-            except Exception:
-                continue
-
-        return result
-    except Exception as e:
-        print(f"  警告: 获取申万行业指数列表失败: {e}")
-        return result
-
-
 def _get_benchmark_sector_weights(benchmark_index):
-    """获取基准指数的行业权重分布"""
+    """获取基准指数的行业权重分布（通过成分股行业聚合）"""
     cache_file = Path(CACHE_DIR) / f"benchmark_weights_{benchmark_index}.json"
     cache_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -347,25 +204,13 @@ def _get_benchmark_sector_weights(benchmark_index):
 
     sector_weights = {}
     try:
-        # 尝试获取指数成分股
-        cons = ak.index_stock_cons(symbol=benchmark_index)
-        if cons is not None and not cons.empty:
-            code_col = None
-            for col in cons.columns:
-                if '代码' in str(col) or 'code' in str(col).lower():
-                    code_col = col
-                    break
-            if code_col is None:
-                code_col = cons.columns[0]
-
-            # 对每个成分股查行业，按行业聚合（等权近似）
-            total = len(cons)
-            for _, row in cons.iterrows():
-                code = str(row[code_col]).zfill(6)
+        codes = get_index_constituents(benchmark_index)
+        if codes:
+            total = len(codes)
+            for code in codes:
                 sector = get_stock_sector(code)
                 sector_weights[sector] = sector_weights.get(sector, 0) + 1
 
-            # 转为权重比例
             for sector in sector_weights:
                 sector_weights[sector] = sector_weights[sector] / total
 
@@ -462,6 +307,21 @@ def brinson_analysis(snapshots, portfolio_values, benchmark_prices, start_date, 
 
     start_str = pd.to_datetime(start_date).strftime('%Y%m%d')
     end_str = pd.to_datetime(end_date).strftime('%Y%m%d')
+
+    # 将 list 格式的 snapshots 转为 dict 格式 {date: {code: {...}, 'cash': float}}
+    if isinstance(snapshots, list):
+        snap_dict = {}
+        for snap in snapshots:
+            d = snap['date']
+            entry = {}
+            for code, info in snap['positions'].items():
+                qty = info.get('quantity', 0)
+                cost = info.get('cost_basis', 0)
+                avg_cost = cost / qty if qty > 0 else 0
+                entry[code] = {'quantity': qty, 'avg_cost': avg_cost, 'name': info.get('name', '')}
+            entry['cash'] = snap.get('cash', 0)
+            snap_dict[d] = entry
+        snapshots = snap_dict
 
     # 1. 分类组合持仓行业
     print("  分类组合持仓行业...")

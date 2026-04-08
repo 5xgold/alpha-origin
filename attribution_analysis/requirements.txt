@@ -1,5 +1,6 @@
 # attribution_analysis/requirements.txt
-akshare
+baostock
+requests
 pandas>=2.0.0
 numpy>=1.24.0
 statsmodels>=0.14.0

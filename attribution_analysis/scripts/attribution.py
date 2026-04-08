@@ -16,6 +16,7 @@ from config import (
     CACHE_EXPIRY_DAYS, ROLLING_WINDOW, MIN_TRADING_DAYS,
     REPORT_TITLE, OUTPUT_DIR
 )
+from scripts.brinson import brinson_analysis
 
 
 def load_trades(csv_path):
@@ -333,7 +334,7 @@ def alpha_beta_analysis(returns_df):
     }
 
 
-def print_terminal_report(results, start_date, end_date):
+def print_terminal_report(results, start_date, end_date, brinson_result=None):
     """打印终端报告"""
     print("\n" + "=" * 50)
     print(f"{REPORT_TITLE}")
@@ -369,10 +370,44 @@ def print_terminal_report(results, start_date, end_date):
         if results['beta'] > 1:
             print("市场敏感度过高，放大了市场波动。")
 
+    # Brinson 归因
+    if brinson_result and brinson_result.get("details"):
+        print("\n【Brinson 归因】")
+        # 表头
+        header = f"{'行业':<10} | {'组合权重':>8} | {'基准权重':>8} | {'组合收益':>8} | {'基准收益':>8} | {'配置效应':>8} | {'选择效应':>8} | {'交互效应':>8}"
+        print(header)
+        print("-" * len(header))
+
+        for d in brinson_result["details"]:
+            sector = d["sector"][:10].ljust(10)
+            print(f"{sector} | {d['portfolio_weight']:>7.1%} | {d['benchmark_weight']:>7.1%} | "
+                  f"{d['portfolio_return']:>+7.1%} | {d['benchmark_return']:>+7.1%} | "
+                  f"{d['allocation']:>+7.2%} | {d['selection']:>+7.2%} | {d['interaction']:>+7.2%}")
+
+        print("-" * len(header))
+        print(f"{'合计':<10} | {'100.0%':>8} | {'100.0%':>8} | {'':>8} | {'':>8} | "
+              f"{brinson_result['total_allocation']:>+7.2%} | "
+              f"{brinson_result['total_selection']:>+7.2%} | "
+              f"{brinson_result['total_interaction']:>+7.2%}")
+
+        # 结论
+        ta = brinson_result["total_allocation"]
+        ts = brinson_result["total_selection"]
+        print()
+        if abs(ta) > abs(ts):
+            print(f"→ 超额收益主要来自行业配置（配置效应 {ta:+.2%} > 选择效应 {ts:+.2%}）")
+        else:
+            print(f"→ 超额收益主要来自个股选择（选择效应 {ts:+.2%} > 配置效应 {ta:+.2%}）")
+
+        if brinson_result.get("verification_diff") is not None:
+            diff = brinson_result["verification_diff"]
+            if diff < 0.01:
+                print(f"→ 校验通过：三效应之和与超额收益差异 {diff:.4%}")
+
     print("=" * 50)
 
 
-def generate_md_report(returns_df, results, output_path, start_date, end_date):
+def generate_md_report(returns_df, results, output_path, start_date, end_date, brinson_result=None):
     """生成 Markdown 报告"""
     # 净值序列
     cumulative_portfolio = (1 + returns_df['portfolio_return']).cumprod()
@@ -461,6 +496,39 @@ def generate_md_report(returns_df, results, output_path, start_date, end_date):
             lines.append(f"| {month} | {row['portfolio_return']:+.2%} | {row['benchmark_return']:+.2%} | {row['excess']:+.2%} |")
         lines.append(f"")
 
+    # Brinson 归因
+    if brinson_result and brinson_result.get("details"):
+        lines.append(f"## Brinson 归因（BHB 模型）")
+        lines.append(f"")
+        lines.append(f"| 行业 | 组合权重 | 基准权重 | 组合收益 | 基准收益 | 配置效应 | 选择效应 | 交互效应 |")
+        lines.append(f"|------|----------|----------|----------|----------|----------|----------|----------|")
+        for d in brinson_result["details"]:
+            lines.append(
+                f"| {d['sector']} "
+                f"| {d['portfolio_weight']:.1%} "
+                f"| {d['benchmark_weight']:.1%} "
+                f"| {d['portfolio_return']:+.1%} "
+                f"| {d['benchmark_return']:+.1%} "
+                f"| {d['allocation']:+.2%} "
+                f"| {d['selection']:+.2%} "
+                f"| {d['interaction']:+.2%} |"
+            )
+        lines.append(
+            f"| **合计** | 100.0% | 100.0% | | "
+            f"| **{brinson_result['total_allocation']:+.2%}** "
+            f"| **{brinson_result['total_selection']:+.2%}** "
+            f"| **{brinson_result['total_interaction']:+.2%}** |"
+        )
+        lines.append(f"")
+
+        ta = brinson_result["total_allocation"]
+        ts = brinson_result["total_selection"]
+        if abs(ta) > abs(ts):
+            lines.append(f"> 超额收益主要来自**行业配置**（配置效应 {ta:+.2%} > 选择效应 {ts:+.2%}）")
+        else:
+            lines.append(f"> 超额收益主要来自**个股选择**（选择效应 {ts:+.2%} > 配置效应 {ta:+.2%}）")
+        lines.append(f"")
+
     # 结论
     lines.append(f"## 结论")
     lines.append(f"")
@@ -508,8 +576,12 @@ def main():
     print("正在进行 Alpha/Beta 分析...")
     results = alpha_beta_analysis(returns_df)
 
-    # 7. 输出报告
-    print_terminal_report(results, start, end)
+    # 7. Brinson 归因分析
+    print("正在进行 Brinson 归因分析...")
+    brinson_result = brinson_analysis(snapshots, portfolio_values, benchmark_prices, start, end)
+
+    # 8. 输出报告
+    print_terminal_report(results, start, end, brinson_result)
 
     if args.output:
         output_path = args.output
@@ -517,7 +589,7 @@ def main():
         output_path = f"{OUTPUT_DIR}/{datetime.now().strftime('%Y-%m-%d')}_report.md"
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    generate_md_report(returns_df, results, output_path, start, end)
+    generate_md_report(returns_df, results, output_path, start, end, brinson_result)
 
 
 if __name__ == "__main__":

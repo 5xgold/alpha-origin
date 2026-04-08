@@ -7,6 +7,8 @@ RISK_FREE_RATE = 0.018      # 年化无风险利率 1.8%
 # 数据缓存
 CACHE_DIR = "data/cache"
 CACHE_EXPIRY_DAYS = 7
+SECTOR_CACHE_DAYS = 30          # 行业分类缓存（不常变）
+SECTOR_CLASSIFICATION = "sw"    # 申万行业分类
 
 # 分析参数
 ROLLING_WINDOW = 60         # 滚动 Beta 窗口（交易日）

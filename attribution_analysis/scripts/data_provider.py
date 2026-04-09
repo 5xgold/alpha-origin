@@ -1,8 +1,9 @@
 """统一行情数据获取模块
 
-数据源：
-- A股行情/指数行情/行业分类/指数成分股 → baostock（不复权）
-- 港股行情 → 东方财富 HTTP API（不复权）
+数据源（按优先级 fallback）：
+- A股行情 → baostock（不复权）
+- 港股行情 → Yahoo Finance（不复权）→ 东方财富 HTTP API（不复权）
+- 指数行情/行业分类/指数成分股 → baostock
 - 申万行业指数收益率 → 东方财富 HTTP API
 """
 
@@ -117,13 +118,50 @@ def _classify_etf(name):
 
 
 # ============================================================
+# 多数据源架构
+# ============================================================
+
+_EMPTY_PRICE_DF = pd.DataFrame(columns=['date', 'open', 'high', 'low', 'close', 'volume'])
+
+# 数据源注册表：market → [(name, fetcher_fn), ...]
+# 按优先级排列，第一个成功即返回
+_SOURCE_REGISTRY = {
+    'a_stock': [
+        ('baostock', '_fetch_a_stock_prices'),
+    ],
+    'hk_stock': [
+        ('yahoo', '_fetch_hk_yahoo'),
+        ('eastmoney', '_fetch_hk_eastmoney'),
+    ],
+}
+
+
+def _fetch_with_fallback(sources, code_str, start_date, end_date):
+    """按优先级尝试多个数据源，第一个成功即返回"""
+    last_error = None
+    for name, fn_name in sources:
+        try:
+            fn = globals()[fn_name]
+            df = fn(code_str, start_date, end_date)
+            if df is not None and not df.empty:
+                return df
+        except Exception as e:
+            last_error = e
+            print(f"  数据源 {name} 获取 {code_str} 失败: {e}")
+            continue
+    if last_error:
+        raise last_error
+    return _EMPTY_PRICE_DF.copy()
+
+
+# ============================================================
 # 公开 API：股票行情
 # ============================================================
 
 def get_stock_prices(code, start_date, end_date):
-    """获取股票历史行情（带缓存）
+    """获取股票历史行情（带缓存、多数据源 fallback）
 
-    A股 → baostock, 港股 → 新浪 HTTP
+    A股 → baostock, 港股 → Yahoo Finance → 东方财富
     返回 DataFrame[date, open, close, high, low, volume]
     """
     code_str = str(code).strip()
@@ -138,17 +176,16 @@ def get_stock_prices(code, start_date, end_date):
         return pd.read_csv(cache_file, parse_dates=['date'])
 
     try:
-        if is_hk:
-            df = _fetch_hk_prices(code_str, start_date, end_date)
-        else:
-            df = _fetch_a_stock_prices(code_str, start_date, end_date)
+        market = 'hk_stock' if is_hk else 'a_stock'
+        sources = _SOURCE_REGISTRY[market]
+        df = _fetch_with_fallback(sources, code_str, start_date, end_date)
 
         df['date'] = pd.to_datetime(df['date'])
         df.to_csv(cache_file, index=False)
         return df
     except Exception as e:
-        print(f"警告: 获取 {code_str} 行情失败: {e}")
-        return pd.DataFrame(columns=['date', 'open', 'high', 'low', 'close', 'volume'])
+        print(f"警告: 获取 {code_str} 行情失败（所有数据源）: {e}")
+        return _EMPTY_PRICE_DF.copy()
 
 
 def _fetch_a_stock_prices(code_str, start_date, end_date):
@@ -173,16 +210,36 @@ def _fetch_a_stock_prices(code_str, start_date, end_date):
     return df
 
 
-def _fetch_hk_prices(code_str, start_date, end_date):
+def _fetch_hk_yahoo(code_str, start_date, end_date):
+    """Yahoo Finance 获取港股行情（不复权）"""
+    import yfinance as yf
+
+    symbol = f"{code_str}.HK"
+    start_fmt = _to_bs_date(start_date)
+    end_fmt = _to_bs_date(end_date)
+
+    tk = yf.Ticker(symbol)
+    df = tk.history(start=start_fmt, end=end_fmt, auto_adjust=False)
+
+    if df.empty:
+        return _EMPTY_PRICE_DF.copy()
+
+    df = df.reset_index()
+    df = df.rename(columns={'Date': 'date', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
+    df = df[['date', 'open', 'high', 'low', 'close', 'volume']]
+    df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
+    return df.sort_values('date').reset_index(drop=True)
+
+
+def _fetch_hk_eastmoney(code_str, start_date, end_date):
     """东方财富 HTTP 获取港股行情（不复权）"""
-    # 东方财富港股 secid 前缀为 116
     url = (
         "https://33.push2his.eastmoney.com/api/qt/stock/kline/get"
         f"?secid=116.{code_str}"
         "&fields1=f1,f2,f3,f4,f5,f6"
         "&fields2=f51,f52,f53,f54,f55,f56"
-        "&klt=101"  # 日K
-        "&fqt=0"    # 不复权
+        "&klt=101"
+        "&fqt=0"
         "&end=20500000"
         "&lmt=1000000"
     )
@@ -192,7 +249,7 @@ def _fetch_hk_prices(code_str, start_date, end_date):
 
     klines = data.get("data", {}).get("klines", [])
     if not klines:
-        return pd.DataFrame(columns=['date', 'open', 'high', 'low', 'close', 'volume'])
+        return _EMPTY_PRICE_DF.copy()
 
     records = []
     for line in klines:

@@ -18,7 +18,7 @@ error() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 
 # ── 参数 ──
 PDF_INPUT="${1:-data/raw/$(ls data/raw/*.pdf 2>/dev/null | head -1 | xargs basename 2>/dev/null)}"
-START_DATE="${2:-2025-01-01}"
+START_DATE="${2:-2026-01-01}"
 END_DATE="${3:-2026-03-31}"
 TRADES_CSV="data/trades.csv"
 REPORT="output/report.md"

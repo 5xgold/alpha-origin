@@ -81,8 +81,8 @@ def normalize_columns(headers, rows):
     df["net_amount"] = df.apply(calculate_net_amount, axis=1)
 
     # 过滤掉非股票交易（场外开基、申购配号等）
-    df = df[df['market'].isin(['上海', '深圳', '沪港通'])]
-    df = df[df['direction'].isin(['买入', '卖出'])]
+    df = df[df['market'].isin(['上海', '深圳', '沪港通']) | df['direction'].isin(['分红', '扣税'])]
+    df = df[df['direction'].isin(['买入', '卖出', '分红', '扣税'])]
 
     return df[STANDARD_COLUMNS]
 
@@ -92,6 +92,13 @@ def infer_direction(row):
     # 从业务类型推断
     business_type = str(row.get("business_type", ""))
     remark = str(row.get("remark", ""))
+
+    # 分红/扣税识别（优先于买卖判断）
+    if "股息红利税补缴" in business_type or "股息红利税补缴" in remark:
+        return "扣税"
+    if "股息红利发放" in business_type or "红利入账" in business_type or \
+       "股息红利发放" in remark or "红利入账" in remark:
+        return "分红"
 
     if "买" in business_type or "买" in remark or "Buy" in business_type:
         return "买入"

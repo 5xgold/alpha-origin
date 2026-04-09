@@ -1,14 +1,13 @@
 """统一行情数据获取模块
 
 数据源：
-- A股行情/指数行情/行业分类/指数成分股 → baostock
-- 港股行情 → 新浪 HTTP API
+- A股行情/指数行情/行业分类/指数成分股 → baostock（不复权）
+- 港股行情 → 东方财富 HTTP API（不复权）
 - 申万行业指数收益率 → 东方财富 HTTP API
 """
 
 import sys
 import json
-import re
 import atexit
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -132,7 +131,7 @@ def get_stock_prices(code, start_date, end_date):
     if not is_hk:
         code_str = code_str.zfill(6)
 
-    cache_file = Path(CACHE_DIR) / f"{code_str}_{start_date}_{end_date}.csv"
+    cache_file = Path(CACHE_DIR) / f"{code_str}_{start_date}_{end_date}_raw.csv"
     cache_file.parent.mkdir(parents=True, exist_ok=True)
 
     if _cache_valid(cache_file, CACHE_EXPIRY_DAYS):
@@ -162,7 +161,7 @@ def _fetch_a_stock_prices(code_str, start_date, end_date):
         start_date=_to_bs_date(start_date),
         end_date=_to_bs_date(end_date),
         frequency="d",
-        adjustflag="2",  # 前复权
+        adjustflag="3",  # 不复权
     )
     rows = []
     while (rs.error_code == '0') and rs.next():
@@ -175,28 +174,36 @@ def _fetch_a_stock_prices(code_str, start_date, end_date):
 
 
 def _fetch_hk_prices(code_str, start_date, end_date):
-    """新浪 HTTP 获取港股行情"""
-    url = f"https://finance.sina.com.cn/realstock/company/hk{code_str}/hisdata/klc_kl.js"
+    """东方财富 HTTP 获取港股行情（不复权）"""
+    # 东方财富港股 secid 前缀为 116
+    url = (
+        "https://33.push2his.eastmoney.com/api/qt/stock/kline/get"
+        f"?secid=116.{code_str}"
+        "&fields1=f1,f2,f3,f4,f5,f6"
+        "&fields2=f51,f52,f53,f54,f55,f56"
+        "&klt=101"  # 日K
+        "&fqt=0"    # 不复权
+        "&end=20500000"
+        "&lmt=1000000"
+    )
     resp = requests.get(url, timeout=15)
     resp.raise_for_status()
+    data = resp.json()
 
-    # 解析 JS 响应中的数据数组
-    text = resp.text
-    pattern = r'\{date:"(\d{4}_\d{2}_\d{2})",open:"([\d.]+)",high:"([\d.]+)",low:"([\d.]+)",close:"([\d.]+)",volume:"(\d+)"\}'
-    matches = re.findall(pattern, text)
-
-    if not matches:
+    klines = data.get("data", {}).get("klines", [])
+    if not klines:
         return pd.DataFrame(columns=['date', 'open', 'high', 'low', 'close', 'volume'])
 
     records = []
-    for m in matches:
+    for line in klines:
+        parts = line.split(",")
         records.append({
-            'date': m[0].replace('_', '-'),
-            'open': float(m[1]),
-            'high': float(m[2]),
-            'low': float(m[3]),
-            'close': float(m[4]),
-            'volume': int(m[5]),
+            'date': parts[0],
+            'open': float(parts[1]),
+            'close': float(parts[2]),
+            'high': float(parts[3]),
+            'low': float(parts[4]),
+            'volume': int(parts[5]),
         })
 
     df = pd.DataFrame(records)

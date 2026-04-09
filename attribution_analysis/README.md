@@ -12,6 +12,7 @@ pip install -r requirements.txt
 ### 2. 准备数据
 
 从券商导出 PDF 交割单，放到 `data/raw/` 目录。
+券商支持：东方证券
 
 ### 3. 转换数据
 

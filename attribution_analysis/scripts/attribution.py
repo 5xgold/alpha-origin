@@ -128,11 +128,15 @@ def rebuild_positions(trades_df, holdings_df=None):
             if trade.get('name') and not positions[code]['name']:
                 positions[code]['name'] = trade['name']
 
-            # 现金流：买入花钱（减少），卖出收钱（增加）
+            # 现金流：买入花钱（减少），卖出收钱（增加），分红入账，扣税扣除
             if trade['direction'] == '买入':
                 cash -= abs(trade['net_amount'])
-            else:
+            elif trade['direction'] == '卖出':
                 cash += abs(trade['net_amount'])
+            elif trade['direction'] == '分红':
+                cash += abs(trade['net_amount'])
+            elif trade['direction'] == '扣税':
+                cash -= abs(trade['net_amount'])
 
             if trade['direction'] == '买入':
                 positions[code]['quantity'] += trade['quantity']
@@ -543,7 +547,7 @@ def main():
     if args.output:
         output_path = args.output
     else:
-        output_path = f"{OUTPUT_DIR}/{datetime.now().strftime('%Y-%m-%d')}_report.md"
+        output_path = f"{OUTPUT_DIR}/{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}_report.md"
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     generate_md_report(returns_df, results, output_path, start, end, brinson_result)

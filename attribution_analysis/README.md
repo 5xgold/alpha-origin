@@ -126,7 +126,9 @@ A: 说明策略跑输市场。可能原因：
 ## 技术栈
 
 - Python 3.14
-- AKShare - A股数据获取
+- baostock - A股行情（不复权）
+- futu-api - 港股行情首选（FutuOpenD）
+- yfinance - 港股行情备选（Yahoo Finance）
 - pandas - 数据处理
 - statsmodels - 统计分析
 - pyecharts - 可视化
@@ -141,12 +143,13 @@ attribution_analysis/
 ├── README.md             # 本文档
 ├── data/
 │   ├── raw/              # 原始PDF文件
-│   ├── cache/            # AKShare缓存
+│   ├── cache/            # 行情数据缓存
 │   └── trades.csv        # 标准格式交割单
 ├── scripts/
 │   ├── convert_broker_data.py  # PDF转换脚本
 │   ├── attribution.py          # 核心分析脚本
-│   └── brinson.py              # Brinson 归因模块（BHB 模型）
+│   ├── brinson.py              # Brinson 归因模块（BHB 模型）
+│   └── data_provider.py        # 多数据源行情获取
 ├── output/               # 生成的报告
 └── templates/            # HTML模板（预留）
 ```

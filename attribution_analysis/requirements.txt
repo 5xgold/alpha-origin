@@ -1,5 +1,6 @@
 # attribution_analysis/requirements.txt
 baostock
+futu-api
 yfinance
 requests
 pandas>=2.0.0

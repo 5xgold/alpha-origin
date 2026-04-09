@@ -2,7 +2,7 @@
 
 数据源（按优先级 fallback）：
 - A股行情 → baostock（不复权）
-- 港股行情 → Yahoo Finance（不复权）→ 东方财富 HTTP API（不复权）
+- 港股行情 → FutuOpenD（不复权）→ Yahoo Finance → 东方财富 HTTP API
 - 指数行情/行业分类/指数成分股 → baostock
 - 申万行业指数收益率 → 东方财富 HTTP API
 """
@@ -130,6 +130,7 @@ _SOURCE_REGISTRY = {
         ('baostock', '_fetch_a_stock_prices'),
     ],
     'hk_stock': [
+        ('futu', '_fetch_hk_futu'),
         ('yahoo', '_fetch_hk_yahoo'),
         ('eastmoney', '_fetch_hk_eastmoney'),
     ],
@@ -161,7 +162,7 @@ def _fetch_with_fallback(sources, code_str, start_date, end_date):
 def get_stock_prices(code, start_date, end_date):
     """获取股票历史行情（带缓存、多数据源 fallback）
 
-    A股 → baostock, 港股 → Yahoo Finance → 东方财富
+    A股 → baostock, 港股 → FutuOpenD → Yahoo Finance → 东方财富
     返回 DataFrame[date, open, close, high, low, volume]
     """
     code_str = str(code).strip()
@@ -208,6 +209,30 @@ def _fetch_a_stock_prices(code_str, start_date, end_date):
         df[col] = pd.to_numeric(df[col], errors='coerce')
     df = df.dropna(subset=["close"])
     return df
+
+
+def _fetch_hk_futu(code_str, start_date, end_date):
+    """FutuOpenD 获取港股行情（不复权）"""
+    from futu import OpenQuoteContext, KLType, AuType
+
+    ctx = OpenQuoteContext(host='127.0.0.1', port=11111)
+    try:
+        ret, df, _ = ctx.request_history_kline(
+            f'HK.{code_str}',
+            ktype=KLType.K_DAY,
+            autype=AuType.NONE,
+            start=_to_bs_date(start_date),
+            end=_to_bs_date(end_date),
+        )
+        if ret != 0 or df is None or df.empty:
+            return _EMPTY_PRICE_DF.copy()
+
+        df = df.rename(columns={'time_key': 'date'})
+        df = df[['date', 'open', 'high', 'low', 'close', 'volume']]
+        df['date'] = pd.to_datetime(df['date'])
+        return df.sort_values('date').reset_index(drop=True)
+    finally:
+        ctx.close()
 
 
 def _fetch_hk_yahoo(code_str, start_date, end_date):

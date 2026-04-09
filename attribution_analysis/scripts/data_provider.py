@@ -17,7 +17,7 @@ import baostock as bs
 import requests
 
 sys.path.append(str(Path(__file__).parent.parent))
-from config import CACHE_DIR, CACHE_EXPIRY_DAYS, SECTOR_CACHE_DAYS
+from config import CACHE_DIR, CACHE_EXPIRY_DAYS, SECTOR_CACHE_DAYS, FUTU_HOST, FUTU_PORT
 
 # ============================================================
 # baostock 生命周期
@@ -215,7 +215,7 @@ def _fetch_hk_futu(code_str, start_date, end_date):
     """FutuOpenD 获取港股行情（不复权）"""
     from futu import OpenQuoteContext, KLType, AuType
 
-    ctx = OpenQuoteContext(host='127.0.0.1', port=11111)
+    ctx = OpenQuoteContext(host=FUTU_HOST, port=FUTU_PORT)
     try:
         ret, df, _ = ctx.request_history_kline(
             f'HK.{code_str}',

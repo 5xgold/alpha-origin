@@ -2,6 +2,9 @@
 attribution_analysis/data/
 attribution_analysis/output/
 
+# Env
+.env
+
 # Python
 __pycache__/
 *.py[cod]

@@ -1,9 +1,15 @@
 """全局配置文件"""
 
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")
+
 # 基准配置
 BENCHMARK_INDEX = "000985"  # 中证全指
 RISK_FREE_RATE = 0.018      # 年化无风险利率 1.8%
-    
+
 # 数据缓存
 CACHE_DIR = "data/cache"
 CACHE_EXPIRY_DAYS = 7
@@ -17,6 +23,11 @@ MIN_TRADING_DAYS = 5       # 最少交易日数
 # 报告配置
 REPORT_TITLE = "策略归因分析报告"
 OUTPUT_DIR = "output"
+
+# 外部服务
+TS_TOKEN = os.getenv("TS_TOKEN", "")
+FUTU_HOST = os.getenv("FUTU_HOST", "127.0.0.1")
+FUTU_PORT = int(os.getenv("FUTU_PORT", "11111"))
 
 # 标准列名
 STANDARD_COLUMNS = [

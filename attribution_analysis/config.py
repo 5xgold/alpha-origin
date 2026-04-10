@@ -6,8 +6,44 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent / ".env")
 
-# 基准配置
-BENCHMARK_INDEX = "000300"  # 沪深300
+# 基准配置（支持单一基准或复合基准）
+# 单一基准: BENCHMARK_INDEX = "000300"
+# 复合基准:
+BENCHMARK_INDEX = [
+    {"index": "000300", "weight": 0.65},    # 沪深300
+    {"index": "HK.800000", "weight": 0.35}, # 恒生指数
+]
+
+
+def parse_benchmark_config(cfg):
+    """解析基准配置，返回标准化的组件列表
+
+    Args:
+        cfg: str（单一基准）或 list[dict]（复合基准）
+
+    Returns:
+        list[dict]: [{"index": str, "weight": float, "source": str}, ...]
+    """
+    if isinstance(cfg, str):
+        return [{"index": cfg, "weight": 1.0, "source": "baostock"}]
+
+    if not isinstance(cfg, list) or len(cfg) == 0:
+        raise ValueError(f"无效的基准配置: {cfg}")
+
+    components = []
+    for item in cfg:
+        idx = item["index"]
+        weight = item["weight"]
+        source = "futu" if idx.startswith("HK.") else "baostock"
+        components.append({"index": idx, "weight": weight, "source": source})
+
+    # 权重归一化
+    total_w = sum(c["weight"] for c in components)
+    if total_w > 0:
+        for c in components:
+            c["weight"] /= total_w
+
+    return components
 RISK_FREE_RATE = 0.018      # 年化无风险利率 1.8%
 
 # 数据缓存

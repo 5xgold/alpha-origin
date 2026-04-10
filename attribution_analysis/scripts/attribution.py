@@ -11,8 +11,9 @@ sys.path.append(str(Path(__file__).parent.parent))
 from config import (
     BENCHMARK_INDEX, RISK_FREE_RATE,
     REPORT_TITLE, OUTPUT_DIR,
+    parse_benchmark_config,
 )
-from scripts.data_provider import get_stock_prices, get_benchmark_prices
+from scripts.data_provider import get_stock_prices, get_benchmark_prices, get_composite_benchmark_prices
 from scripts.brinson import brinson_analysis
 
 
@@ -545,7 +546,11 @@ def main():
 
     # 4. 获取基准数据
     print("正在获取基准指数数据...")
-    benchmark_prices = get_benchmark_prices(BENCHMARK_INDEX, start.strftime('%Y%m%d'), end.strftime('%Y%m%d'))
+    benchmark_config = parse_benchmark_config(BENCHMARK_INDEX)
+    if len(benchmark_config) == 1:
+        benchmark_prices = get_benchmark_prices(benchmark_config[0]["index"], start.strftime('%Y%m%d'), end.strftime('%Y%m%d'))
+    else:
+        benchmark_prices = get_composite_benchmark_prices(benchmark_config, start.strftime('%Y%m%d'), end.strftime('%Y%m%d'))
 
     # 5. 计算收益率
     print("正在计算收益率...")
@@ -563,7 +568,7 @@ def main():
 
     # 8. Brinson 归因分析
     print("正在进行 Brinson 归因分析...")
-    brinson_result = brinson_analysis(snapshots, portfolio_values, benchmark_prices, start, end, stock_prices)
+    brinson_result = brinson_analysis(snapshots, portfolio_values, benchmark_prices, start, end, stock_prices, benchmark_config=benchmark_config)
 
     # 9. 输出报告
     print_terminal_report(results, start, end, brinson_result)

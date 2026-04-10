@@ -235,6 +235,51 @@ def _fetch_hk_futu(code_str, start_date, end_date):
         ctx.close()
 
 
+def _fetch_hk_index_futu(futu_code, start_date, end_date):
+    """FutuOpenD 获取港股指数行情（如 HK.800000 恒生指数）
+
+    Args:
+        futu_code: 完整 Futu 代码（如 'HK.800000'）
+        start_date: 开始日期 (YYYYMMDD)
+        end_date: 结束日期 (YYYYMMDD)
+
+    Returns:
+        DataFrame[date, open, high, low, close, volume]
+    """
+    cache_file = Path(CACHE_DIR) / f"benchmark_{futu_code.replace('.', '_')}_{start_date}_{end_date}.csv"
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+
+    if _cache_valid(cache_file, CACHE_EXPIRY_DAYS):
+        return pd.read_csv(cache_file, parse_dates=['date'])
+
+    from futu import OpenQuoteContext, KLType, AuType
+
+    ctx = OpenQuoteContext(host=FUTU_HOST, port=FUTU_PORT)
+    try:
+        ret, df, _ = ctx.request_history_kline(
+            futu_code,
+            ktype=KLType.K_DAY,
+            autype=AuType.NONE,
+            start=_to_bs_date(start_date),
+            end=_to_bs_date(end_date),
+        )
+        if ret != 0 or df is None or df.empty:
+            print(f"错误: FutuOpenD 获取 {futu_code} 失败 (ret={ret})")
+            return _EMPTY_PRICE_DF.copy()
+
+        df = df.rename(columns={'time_key': 'date'})
+        df = df[['date', 'open', 'high', 'low', 'close', 'volume']]
+        df['date'] = pd.to_datetime(df['date'])
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        df = df.dropna(subset=['close']).sort_values('date').reset_index(drop=True)
+
+        df.to_csv(cache_file, index=False)
+        return df
+    finally:
+        ctx.close()
+
+
 
 
 # ============================================================
@@ -289,9 +334,67 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
     return df
 
 
-# ============================================================
-# 公开 API：个股行业分类
-# ============================================================
+def get_composite_benchmark_prices(benchmark_components, start_date, end_date):
+    """获取复合基准的合成价格序列
+
+    逐个获取各成分指数价格，对齐交易日历后加权合成。
+
+    Args:
+        benchmark_components: parse_benchmark_config() 返回的列表
+        start_date: 开始日期 (YYYYMMDD)
+        end_date: 结束日期 (YYYYMMDD)
+
+    Returns:
+        DataFrame[date, close]（归一化合成价格，与 get_benchmark_prices 兼容）
+    """
+    import numpy as np
+
+    price_series = {}  # {index: Series(date→close)}
+
+    for comp in benchmark_components:
+        idx = comp["index"]
+        source = comp["source"]
+
+        if source == "futu":
+            df = _fetch_hk_index_futu(idx, start_date, end_date)
+        else:
+            df = get_benchmark_prices(idx, start_date, end_date)
+
+        if df is None or df.empty:
+            print(f"错误: 无法获取成分指数 {idx} 的数据")
+            sys.exit(1)
+
+        s = df.set_index('date')['close'].astype(float)
+        price_series[idx] = s
+
+    # 对齐交易日历：取并集 + forward-fill 处理 A/H 不同假期
+    all_dates = sorted(set().union(*(s.index for s in price_series.values())))
+    aligned = pd.DataFrame(index=pd.DatetimeIndex(all_dates))
+
+    for idx, s in price_series.items():
+        aligned[idx] = s
+    aligned = aligned.ffill().bfill()
+
+    # 归一化到 1.0 后加权合成
+    composite = pd.Series(0.0, index=aligned.index)
+    for comp in benchmark_components:
+        idx = comp["index"]
+        weight = comp["weight"]
+        normalized = aligned[idx] / aligned[idx].iloc[0]
+        composite += weight * normalized
+
+    # 转换为与 get_benchmark_prices 兼容的 DataFrame 格式
+    result = pd.DataFrame({
+        'date': composite.index,
+        'close': composite.values,
+    }).reset_index(drop=True)
+
+    # 用第一个成分的首日 close 作为基数，使合成价格有实际量纲
+    first_idx = benchmark_components[0]["index"]
+    base_price = float(price_series[first_idx].iloc[0])
+    result['close'] = result['close'] * base_price
+
+    return result
 
 # 国标行业（baostock）→ 申万一级行业映射
 _GB_TO_SW = {

@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 sys.path.append(str(Path(__file__).parent.parent))
-from config import CACHE_DIR, SECTOR_CACHE_DAYS, BENCHMARK_INDEX
+from config import CACHE_DIR, SECTOR_CACHE_DAYS, BENCHMARK_INDEX, parse_benchmark_config
 from scripts.data_provider import get_stock_sector, get_sw_sector_returns, get_index_constituents
 
 
@@ -120,20 +120,26 @@ def classify_portfolio_sectors(snapshots, start_date, end_date, stock_prices_cac
     return result
 
 
-def get_benchmark_sector_data(benchmark_index, start_date, end_date):
+def get_benchmark_sector_data(benchmark_index, start_date, end_date, benchmark_config=None):
     """获取基准的行业权重和收益
 
-    使用申万一级行业指数收益率作为各行业基准收益。
-    基准行业权重从成分股按行业聚合。
+    支持单一基准和复合基准。复合基准时，A股成分走申万行业，
+    港股成分整体作为「境外」行业。
 
     Args:
-        benchmark_index: 基准指数代码
+        benchmark_index: 基准指数代码（单一基准时使用）
         start_date: 开始日期 (str YYYYMMDD)
         end_date: 结束日期 (str YYYYMMDD)
+        benchmark_config: parse_benchmark_config() 返回的列表（复合基准时传入）
 
     Returns:
         dict: {sector: {weight: float, return: float}}
     """
+    # 复合基准分发
+    if benchmark_config and len(benchmark_config) > 1:
+        return _get_composite_benchmark_sector_data(benchmark_config, start_date, end_date)
+
+    # 单一基准：走现有逻辑
     cache_file = Path(CACHE_DIR) / f"benchmark_sectors_{benchmark_index}_{start_date}_{end_date}.json"
     cache_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -177,6 +183,67 @@ def get_benchmark_sector_data(benchmark_index, start_date, end_date):
             merged[sector]["weight"] /= total_w
 
     cache_file.write_text(json.dumps(merged, ensure_ascii=False))
+    return merged
+
+
+def _get_composite_benchmark_sector_data(benchmark_config, start_date, end_date):
+    """获取复合基准的行业权重和收益
+
+    A股成分（如 000300）：申万行业权重 × 该成分权重
+    港股成分（如 HK.800000）：整体作为「境外」行业，权重 = 该成分权重，收益 = 指数区间收益
+
+    Args:
+        benchmark_config: parse_benchmark_config() 返回的列表
+        start_date: 开始日期 (YYYYMMDD)
+        end_date: 结束日期 (YYYYMMDD)
+
+    Returns:
+        dict: {sector: {weight: float, return: float}}
+    """
+    from scripts.data_provider import _fetch_hk_index_futu
+
+    merged = {}
+
+    for comp in benchmark_config:
+        idx = comp["index"]
+        weight = comp["weight"]
+        source = comp["source"]
+
+        if source == "futu":
+            # 港股指数：整体作为「境外」行业
+            df = _fetch_hk_index_futu(idx, start_date, end_date)
+            if df is not None and not df.empty:
+                close = df['close'].astype(float)
+                hk_return = (close.iloc[-1] / close.iloc[0]) - 1
+            else:
+                hk_return = 0.0
+                print(f"  警告: 无法获取 {idx} 数据，境外收益设为 0")
+
+            sector_name = "境外"
+            if sector_name in merged:
+                merged[sector_name]["weight"] += weight
+                # 加权平均收益（多个境外成分时）
+            else:
+                merged[sector_name] = {"weight": weight, "return": hk_return}
+        else:
+            # A股指数：获取申万行业数据，按权重缩放
+            a_sectors = get_benchmark_sector_data(idx, start_date, end_date)
+            for sector, data in a_sectors.items():
+                if sector in merged:
+                    merged[sector]["weight"] += data["weight"] * weight
+                    # 同名行业收益取加权平均（简化处理：A股部分收益相同）
+                else:
+                    merged[sector] = {
+                        "weight": data["weight"] * weight,
+                        "return": data["return"],
+                    }
+
+    # 归一化权重
+    total_w = sum(v["weight"] for v in merged.values())
+    if total_w > 0:
+        for sector in merged:
+            merged[sector]["weight"] /= total_w
+
     return merged
 
 
@@ -278,7 +345,7 @@ def brinson_attribution(portfolio_sectors, benchmark_sectors):
     }
 
 
-def brinson_analysis(snapshots, portfolio_values, benchmark_prices, start_date, end_date, stock_prices_cache=None):
+def brinson_analysis(snapshots, portfolio_values, benchmark_prices, start_date, end_date, stock_prices_cache=None, benchmark_config=None):
     """Brinson 归因分析主入口
 
     Args:
@@ -288,6 +355,7 @@ def brinson_analysis(snapshots, portfolio_values, benchmark_prices, start_date, 
         start_date: 开始日期
         end_date: 结束日期
         stock_prices_cache: 股票价格缓存 {code: Series(date→close)}
+        benchmark_config: parse_benchmark_config() 返回的列表（复合基准时传入）
 
     Returns:
         dict: Brinson 归因结果，包含 details 和 totals
@@ -322,7 +390,7 @@ def brinson_analysis(snapshots, portfolio_values, benchmark_prices, start_date, 
 
     # 2. 获取基准行业数据
     print("  获取基准行业数据...")
-    benchmark_sectors = get_benchmark_sector_data(BENCHMARK_INDEX, start_str, end_str)
+    benchmark_sectors = get_benchmark_sector_data(BENCHMARK_INDEX, start_str, end_str, benchmark_config=benchmark_config)
 
     if not benchmark_sectors:
         print("  警告: 无法获取基准行业数据，跳过 Brinson 归因")

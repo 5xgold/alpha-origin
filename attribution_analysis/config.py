@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 # 基准配置
-BENCHMARK_INDEX = "000985"  # 中证全指
+BENCHMARK_INDEX = "000300"  # 沪深300
 RISK_FREE_RATE = 0.018      # 年化无风险利率 1.8%
 
 # 数据缓存
@@ -28,6 +28,11 @@ OUTPUT_DIR = "output"
 TS_TOKEN = os.getenv("TS_TOKEN", "")
 FUTU_HOST = os.getenv("FUTU_HOST", "127.0.0.1")
 FUTU_PORT = int(os.getenv("FUTU_PORT", "11111"))
+
+# 货币基金配置
+MONETARY_FUND_CODE = "007864"       # 东方红货币C
+EXTERNAL_FLOW_TYPES = {"银行转存", "银行转取"}
+COLLATERAL_FLOW_TYPES = {"担保品划出", "担保品划入"}
 
 # 标准列名
 STANDARD_COLUMNS = [

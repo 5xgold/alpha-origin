@@ -1,10 +1,9 @@
 """统一行情数据获取模块
 
-数据源（按优先级 fallback）：
+数据源：
 - A股行情 → baostock（不复权）
-- 港股行情 → FutuOpenD（不复权）→ Yahoo Finance → 东方财富 HTTP API
+- 港股行情 → FutuOpenD（不复权）
 - 指数行情/行业分类/指数成分股 → baostock
-- 申万行业指数收益率 → 东方财富 HTTP API
 """
 
 import sys
@@ -17,7 +16,7 @@ import baostock as bs
 import requests
 
 sys.path.append(str(Path(__file__).parent.parent))
-from config import CACHE_DIR, CACHE_EXPIRY_DAYS, SECTOR_CACHE_DAYS, FUTU_HOST, FUTU_PORT
+from config import CACHE_DIR, CACHE_EXPIRY_DAYS, SECTOR_CACHE_DAYS, FUTU_HOST, FUTU_PORT, TS_TOKEN
 
 # ============================================================
 # baostock 生命周期
@@ -41,6 +40,9 @@ def _to_bs_code(code_str):
     """A股代码 → baostock 格式 (sh.600519 / sz.000001)"""
     code_str = code_str.zfill(6)
     if code_str[0] in ('6', '9'):
+        return f"sh.{code_str}"
+    # 5开头的 ETF 属于上海交易所 (510xxx, 512xxx, 513xxx, 515xxx, 516xxx, 518xxx, 520xxx, 560xxx, 561xxx, 562xxx, 563xxx)
+    if code_str[0] == '5':
         return f"sh.{code_str}"
     return f"sz.{code_str}"
 
@@ -131,8 +133,6 @@ _SOURCE_REGISTRY = {
     ],
     'hk_stock': [
         ('futu', '_fetch_hk_futu'),
-        ('yahoo', '_fetch_hk_yahoo'),
-        ('eastmoney', '_fetch_hk_eastmoney'),
     ],
 }
 
@@ -235,66 +235,6 @@ def _fetch_hk_futu(code_str, start_date, end_date):
         ctx.close()
 
 
-def _fetch_hk_yahoo(code_str, start_date, end_date):
-    """Yahoo Finance 获取港股行情（不复权）"""
-    import yfinance as yf
-
-    symbol = f"{code_str}.HK"
-    start_fmt = _to_bs_date(start_date)
-    end_fmt = _to_bs_date(end_date)
-
-    tk = yf.Ticker(symbol)
-    df = tk.history(start=start_fmt, end=end_fmt, auto_adjust=False)
-
-    if df.empty:
-        return _EMPTY_PRICE_DF.copy()
-
-    df = df.reset_index()
-    df = df.rename(columns={'Date': 'date', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
-    df = df[['date', 'open', 'high', 'low', 'close', 'volume']]
-    df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
-    return df.sort_values('date').reset_index(drop=True)
-
-
-def _fetch_hk_eastmoney(code_str, start_date, end_date):
-    """东方财富 HTTP 获取港股行情（不复权）"""
-    url = (
-        "https://33.push2his.eastmoney.com/api/qt/stock/kline/get"
-        f"?secid=116.{code_str}"
-        "&fields1=f1,f2,f3,f4,f5,f6"
-        "&fields2=f51,f52,f53,f54,f55,f56"
-        "&klt=101"
-        "&fqt=0"
-        "&end=20500000"
-        "&lmt=1000000"
-    )
-    resp = requests.get(url, timeout=15)
-    resp.raise_for_status()
-    data = resp.json()
-
-    klines = data.get("data", {}).get("klines", [])
-    if not klines:
-        return _EMPTY_PRICE_DF.copy()
-
-    records = []
-    for line in klines:
-        parts = line.split(",")
-        records.append({
-            'date': parts[0],
-            'open': float(parts[1]),
-            'close': float(parts[2]),
-            'high': float(parts[3]),
-            'low': float(parts[4]),
-            'volume': int(parts[5]),
-        })
-
-    df = pd.DataFrame(records)
-    df['date'] = pd.to_datetime(df['date'])
-
-    start_dt = pd.to_datetime(start_date, format='%Y%m%d')
-    end_dt = pd.to_datetime(end_date, format='%Y%m%d')
-    df = df[(df['date'] >= start_dt) & (df['date'] <= end_dt)]
-    return df.sort_values('date').reset_index(drop=True)
 
 
 # ============================================================
@@ -353,10 +293,117 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
 # 公开 API：个股行业分类
 # ============================================================
 
+# 国标行业（baostock）→ 申万一级行业映射
+_GB_TO_SW = {
+    # 农林牧渔
+    "A01农业": "农林牧渔", "A02林业": "农林牧渔", "A03牧业": "农林牧渔",
+    "A04渔业": "农林牧渔", "A05农、林、牧、渔服务业": "农林牧渔",
+    # 基础化工
+    "C25石油加工、炼焦和核燃料加工业": "基础化工",
+    "C26化学原料和化学制品制造业": "基础化工",
+    "C28化学纤维制造业": "基础化工",
+    "C29橡胶和塑料制品业": "基础化工",
+    "C30非金属矿物制品业": "建筑材料",
+    # 钢铁
+    "C31黑色金属冶炼和压延加工业": "钢铁",
+    # 有色金属
+    "C32有色金属冶炼和压延加工业": "有色金属",
+    # 机械设备
+    "C34通用设备制造业": "机械设备",
+    "C35专用设备制造业": "机械设备",
+    # 电力设备
+    "C38电气机械和器材制造业": "电力设备",
+    # 电子
+    "C39计算机、通信和其他电子设备制造业": "电子",
+    "C40仪器仪表制造业": "电子",
+    # 汽车
+    "C36汽车制造业": "汽车",
+    "C37铁路、船舶、航空航天和其他运输设备制造业": "国防军工",
+    # 家用电器
+    "C33金属制品业": "家用电器",
+    # 食品饮料
+    "C13农副食品加工业": "食品饮料", "C14食品制造业": "食品饮料",
+    "C15酒、饮料和精制茶制造业": "食品饮料",
+    # 纺织服饰
+    "C17纺织业": "纺织服饰", "C18纺织服装、服饰业": "纺织服饰",
+    "C19皮革、毛皮、羽毛及其制品和制鞋业": "纺织服饰",
+    # 轻工制造
+    "C20木材加工和木、竹、藤、棕、草制品业": "轻工制造",
+    "C21家具制造业": "轻工制造", "C22造纸和纸制品业": "轻工制造",
+    "C23印刷和记录媒介复制业": "轻工制造",
+    "C24文教、工美、体育和娱乐用品制造业": "轻工制造",
+    # 医药生物
+    "C27医药制造业": "医药生物",
+    # 公用事业
+    "D44电力、热力生产和供应业": "公用事业",
+    "D45燃气生产和供应业": "公用事业",
+    "D46水的生产和供应业": "公用事业",
+    # 交通运输
+    "G53铁路运输业": "交通运输", "G54道路运输业": "交通运输",
+    "G55水上运输业": "交通运输", "G56航空运输业": "交通运输",
+    "G57管道运输业": "交通运输", "G58装卸搬运和运输代理业": "交通运输",
+    "G59仓储业": "交通运输", "G60邮政业": "交通运输",
+    # 房地产
+    "K70房地产业": "房地产",
+    # 商贸零售
+    "F51批发业": "商贸零售", "F52零售业": "商贸零售",
+    # 社会服务
+    "H61住宿业": "社会服务", "H62餐饮业": "社会服务",
+    "O77生态保护和环境治理业": "环保",
+    "N78公共设施管理业": "社会服务",
+    "R86新闻和出版业": "传媒", "R87广播、电视、电影和影视录音制作业": "传媒",
+    "R88文化艺术业": "传媒", "R89体育": "社会服务",
+    "R90娱乐业": "传媒",
+    # 银行
+    "J66货币金融服务": "银行",
+    # 非银金融
+    "J67资本市场服务": "非银金融", "J68保险业": "非银金融",
+    "J69其他金融业": "非银金融",
+    # 计算机
+    "I63电信、广播电视和卫星传输服务": "通信",
+    "I64互联网和相关服务": "计算机",
+    "I65软件和信息技术服务业": "计算机",
+    # 建筑装饰
+    "E47房屋建筑业": "建筑装饰", "E48土木工程建筑业": "建筑装饰",
+    "E49建筑安装业": "建筑装饰", "E50建筑装饰和其他建筑业": "建筑装饰",
+    # 煤炭
+    "B06煤炭开采和洗选业": "煤炭",
+    # 石油石化
+    "B07石油和天然气开采业": "石油石化",
+    "B08黑色金属矿采选业": "钢铁", "B09有色金属矿采选业": "有色金属",
+    "B10非金属矿采选业": "建筑材料", "B11开采辅助活动": "石油石化",
+    # 综合
+    "S90综合": "综合",
+    # 其他制造
+    "C41其他制造业": "轻工制造",
+    "C42废弃资源综合利用业": "环保",
+    "C43金属制品、机械和设备修理业": "机械设备",
+    # 美容护理
+    "C16烟草制品业": "食品饮料",
+}
+
+
+def _map_gb_to_sw(gb_sector):
+    """将国标行业分类映射到申万一级行业"""
+    if not gb_sector or gb_sector == "其他":
+        return "其他"
+
+    # 精确匹配
+    if gb_sector in _GB_TO_SW:
+        return _GB_TO_SW[gb_sector]
+
+    # 前缀匹配（baostock 返回的可能带或不带编号）
+    for gb_key, sw_name in _GB_TO_SW.items():
+        if gb_sector in gb_key or gb_key in gb_sector:
+            return sw_name
+
+    return "其他"
+
+
 def get_stock_sector(code, name=""):
     """获取个股申万一级行业（带缓存）
 
-    A股 → baostock industry, 港股 → "境外", ETF → 名称推断
+    A股 → baostock industry → 映射到申万, 港股 → "境外", ETF → 名称推断
     """
     code_str = str(code).strip()
 
@@ -376,21 +423,28 @@ def get_stock_sector(code, name=""):
 
     if _cache_valid(cache_file, SECTOR_CACHE_DAYS):
         data = json.loads(cache_file.read_text())
-        return data.get("sector", "其他")
+        sector = data.get("sector", "其他")
+        # 如果缓存的是国标行业名，重新映射
+        if any(c.isdigit() for c in sector[:3]):
+            sector = _map_gb_to_sw(sector)
+            data["sector"] = sector
+            cache_file.write_text(json.dumps(data, ensure_ascii=False))
+        return sector
 
-    # baostock 获取行业
+    # baostock 获取行业（返回国标分类）
     try:
         _ensure_bs_login()
         rs = bs.query_stock_industry()
-        sector = "其他"
+        gb_sector = "其他"
         while (rs.error_code == '0') and rs.next():
             row = rs.get_row_data()
             # row: [updateDate, code, code_name, industry, industryClassification]
             if len(row) >= 4 and row[1].endswith(code_str):
-                sector = row[3] if row[3] else "其他"
+                gb_sector = row[3] if row[3] else "其他"
                 break
 
-        cache_file.write_text(json.dumps({"sector": sector, "code": code_str}, ensure_ascii=False))
+        sector = _map_gb_to_sw(gb_sector)
+        cache_file.write_text(json.dumps({"sector": sector, "code": code_str, "gb_sector": gb_sector}, ensure_ascii=False))
         return sector
     except Exception as e:
         print(f"  警告: 获取 {code_str} 行业失败: {e}")
@@ -401,8 +455,23 @@ def get_stock_sector(code, name=""):
 # 公开 API：申万行业指数收益率
 # ============================================================
 
-# 申万一级行业 → 东方财富板块代码
-_SW_SECTOR_CODES = {
+# 申万2021版一级行业 → Tushare ts_code
+_SW_L1_TUSHARE = {
+    "农林牧渔": "801010.SI", "基础化工": "801030.SI", "钢铁": "801040.SI",
+    "有色金属": "801050.SI", "电子": "801080.SI", "家用电器": "801110.SI",
+    "食品饮料": "801120.SI", "纺织服饰": "801130.SI", "轻工制造": "801140.SI",
+    "医药生物": "801150.SI", "公用事业": "801160.SI", "交通运输": "801170.SI",
+    "房地产": "801180.SI", "商贸零售": "801200.SI", "社会服务": "801210.SI",
+    "综合": "801230.SI", "建筑材料": "801710.SI", "建筑装饰": "801720.SI",
+    "电力设备": "801730.SI", "国防军工": "801740.SI", "计算机": "801750.SI",
+    "传媒": "801760.SI", "通信": "801770.SI", "银行": "801780.SI",
+    "非银金融": "801790.SI", "汽车": "801880.SI", "机械设备": "801890.SI",
+    "煤炭": "801950.SI", "石油石化": "801960.SI", "环保": "801970.SI",
+    "美容护理": "801980.SI",
+}
+
+# 申万一级行业 → 东方财富板块代码（fallback）
+_SW_SECTOR_CODES_EM = {
     "农林牧渔": "BK0474", "基础化工": "BK0479", "钢铁": "BK0478",
     "有色金属": "BK0480", "电子": "BK0459", "汽车": "BK0481",
     "家用电器": "BK0465", "食品饮料": "BK0477", "纺织服饰": "BK0471",
@@ -417,26 +486,91 @@ _SW_SECTOR_CODES = {
 }
 
 
-def get_sw_sector_returns(start_date, end_date):
-    """获取申万一级行业指数收益率 → 东方财富 HTTP
+def _get_sw_sector_returns_tushare(start_date, end_date):
+    """Tushare sw_daily 获取申万一级行业收益率（主源）
 
-    返回 {sector_name: {"return": float, "weight": 0}}
+    用 trade_date 批量拉取，只需 2 次 API 调用（起始日 + 结束日）
+    用 close 自算收益率，不依赖接口 pct_change
     """
-    result = {}
-    start_dt = pd.to_datetime(start_date, format='%Y%m%d')
-    end_dt = pd.to_datetime(end_date, format='%Y%m%d')
+    import tushare as ts
 
-    for sector_name, em_code in _SW_SECTOR_CODES.items():
+    if not TS_TOKEN:
+        raise ValueError("TS_TOKEN 未配置")
+
+    ts.set_token(TS_TOKEN)
+    pro = ts.pro_api()
+
+    start_fmt = start_date.replace("-", "")
+    end_fmt = end_date.replace("-", "")
+
+    # 拉取起始日和结束日附近的全量行业数据
+    # sw_daily(trade_date=xxx) 返回当天所有申万行业（含一二三级）
+    df_start = pro.sw_daily(trade_date=start_fmt)
+    df_end = pro.sw_daily(trade_date=end_fmt)
+
+    # 如果精确日期没数据（非交易日），向前/后搜索最近交易日
+    if df_start is None or df_start.empty:
+        # 向后找 5 天
+        from datetime import datetime, timedelta
+        dt = datetime.strptime(start_fmt, '%Y%m%d')
+        for i in range(1, 6):
+            d = (dt + timedelta(days=i)).strftime('%Y%m%d')
+            df_start = pro.sw_daily(trade_date=d)
+            if df_start is not None and not df_start.empty:
+                break
+
+    if df_end is None or df_end.empty:
+        # 向前找 5 天
+        from datetime import datetime, timedelta
+        dt = datetime.strptime(end_fmt, '%Y%m%d')
+        for i in range(1, 6):
+            d = (dt - timedelta(days=i)).strftime('%Y%m%d')
+            df_end = pro.sw_daily(trade_date=d)
+            if df_end is not None and not df_end.empty:
+                break
+
+    if df_start is None or df_start.empty or df_end is None or df_end.empty:
+        raise ValueError("无法获取起始/结束日的申万行业数据")
+
+    # 筛选一级行业：ts_code 在 _SW_L1_TUSHARE 中
+    l1_codes = set(_SW_L1_TUSHARE.values())
+    # 反向映射 ts_code → sector_name
+    code_to_name = {v: k for k, v in _SW_L1_TUSHARE.items()}
+
+    start_map = {}  # ts_code → close
+    for _, row in df_start.iterrows():
+        if row['ts_code'] in l1_codes:
+            start_map[row['ts_code']] = float(row['close'])
+
+    result = {}
+    for _, row in df_end.iterrows():
+        ts_code = row['ts_code']
+        if ts_code in l1_codes and ts_code in start_map:
+            sector_name = code_to_name[ts_code]
+            end_close = float(row['close'])
+            start_close = start_map[ts_code]
+            ret = (end_close - start_close) / start_close
+            result[sector_name] = {"return": ret, "weight": 0}
+
+    return result
+
+
+def _get_sw_sector_returns_eastmoney(start_date, end_date):
+    """东方财富 HTTP 获取申万一级行业收益率（fallback）"""
+    result = {}
+    start_fmt = start_date.replace("-", "")
+    end_fmt = end_date.replace("-", "")
+
+    for sector_name, em_code in _SW_SECTOR_CODES_EM.items():
         try:
-            # 东方财富行情接口
             url = (
                 "https://push2his.eastmoney.com/api/qt/stock/kline/get"
                 f"?secid=90.{em_code}"
                 "&fields1=f1,f2,f3,f4,f5,f6"
                 "&fields2=f51,f52,f53,f54,f55,f56"
-                "&klt=101"  # 日K
-                f"&beg={start_date}"
-                f"&end={end_date}"
+                "&klt=101"
+                f"&beg={start_fmt}"
+                f"&end={end_fmt}"
                 "&fqt=1"
             )
             resp = requests.get(url, timeout=10)
@@ -452,6 +586,29 @@ def get_sw_sector_returns(start_date, end_date):
         except Exception:
             continue
 
+    return result
+
+
+def get_sw_sector_returns(start_date, end_date):
+    """获取申万一级行业指数收益率
+
+    数据源优先级: Tushare sw_daily → 东方财富 HTTP
+    返回 {sector_name: {"return": float, "weight": 0}}
+    """
+    # 尝试 Tushare
+    try:
+        result = _get_sw_sector_returns_tushare(start_date, end_date)
+        if len(result) >= 20:  # 至少拿到 20 个行业才算成功
+            print(f"  申万行业数据: Tushare ({len(result)} 个行业)")
+            return result
+        print(f"  Tushare 仅返回 {len(result)} 个行业，尝试东方财富...")
+    except Exception as e:
+        print(f"  Tushare 获取申万行业失败: {e}，尝试东方财富...")
+
+    # fallback 东方财富
+    result = _get_sw_sector_returns_eastmoney(start_date, end_date)
+    if result:
+        print(f"  申万行业数据: 东方财富 ({len(result)} 个行业)")
     return result
 
 

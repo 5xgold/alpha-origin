@@ -20,29 +20,21 @@ from scripts.data_provider import get_stock_sector, get_sw_sector_returns, get_i
 def classify_portfolio_sectors(snapshots, start_date, end_date, stock_prices_cache=None):
     """分类组合持仓的行业，计算行业权重和收益
 
+    基于期初持仓计算行业权重，用市场价格计算期间收益率。
+    对于期间卖出的股票，仍用其价格变动计算收益率。
+
     Args:
-        snapshots: {date: {code: {quantity, avg_cost, name, ...}, '_cash': float}}
+        snapshots: {date: {code: {quantity, avg_cost, name, ...}, 'cash': float}}
         start_date: 分析开始日期
         end_date: 分析结束日期
-        stock_prices_cache: 可选的股票价格缓存 {code: Series(date→close)}
+        stock_prices_cache: 股票价格缓存 {code: Series(date→close)}
 
     Returns:
         dict: {sector: {weight: float, return: float, codes: [str]}}
     """
-    # 取结束日的持仓快照（或最近的一个交易日）
     sorted_dates = sorted(snapshots.keys())
     end_dt = pd.to_datetime(end_date)
     start_dt = pd.to_datetime(start_date)
-
-    # 找到分析区间内最后一个有持仓的日期
-    snap_date = None
-    for d in reversed(sorted_dates):
-        if pd.to_datetime(d) <= end_dt:
-            snap_date = d
-            break
-
-    if snap_date is None:
-        return {}
 
     # 找到分析区间内第一个有持仓的日期
     start_snap_date = None
@@ -54,33 +46,23 @@ def classify_portfolio_sectors(snapshots, start_date, end_date, stock_prices_cac
     if start_snap_date is None:
         return {}
 
-    end_snap = snapshots[snap_date]
     start_snap = snapshots[start_snap_date]
 
-    # 收集所有持仓股票的行业
-    sector_data = {}  # {sector: {codes: [], start_values: {}, end_values: {}}}
-
-    # 获取每只股票的行业和市值
+    # 基于期初持仓计算行业权重和收益
+    sector_data = {}  # {sector: {codes: [], start_value: float, end_value: float}}
     total_start_value = 0
-    total_end_value = 0
 
-    all_codes = set()
-    for code in end_snap:
-        if code == 'cash' or code.startswith('_'):
-            continue
-        all_codes.add(code)
     for code in start_snap:
         if code == 'cash' or code.startswith('_'):
             continue
-        all_codes.add(code)
+        if not isinstance(start_snap[code], dict):
+            continue
 
-    for code in all_codes:
-        name = ""
-        if code in end_snap and isinstance(end_snap[code], dict):
-            name = end_snap[code].get('name', '')
-        elif code in start_snap and isinstance(start_snap[code], dict):
-            name = start_snap[code].get('name', '')
+        qty = start_snap[code].get('quantity', 0)
+        if qty <= 0:
+            continue
 
+        name = start_snap[code].get('name', '')
         sector = get_stock_sector(code, name)
 
         if sector not in sector_data:
@@ -89,28 +71,34 @@ def classify_portfolio_sectors(snapshots, start_date, end_date, stock_prices_cac
         if code not in sector_data[sector]["codes"]:
             sector_data[sector]["codes"].append(code)
 
-        # 计算期初市值
-        if code in start_snap and isinstance(start_snap[code], dict):
-            qty = start_snap[code].get('quantity', 0)
-            cost = start_snap[code].get('avg_cost', 0)
-            sv = qty * cost
-            sector_data[sector]["start_value"] += sv
-            total_start_value += sv
+        # 期初市值：用市场价
+        start_price = None
+        if stock_prices_cache and code in stock_prices_cache:
+            prices = stock_prices_cache[code]
+            start_snap_dt = pd.to_datetime(start_snap_date)
+            valid = prices[prices.index <= start_snap_dt]
+            if not valid.empty:
+                start_price = float(valid.iloc[-1])
+        if start_price is None:
+            start_price = start_snap[code].get('avg_cost', 0)
 
-        # 计算期末市值（用实际价格）
-        if code in end_snap and isinstance(end_snap[code], dict):
-            qty = end_snap[code].get('quantity', 0)
-            # 尝试从价格缓存获取期末价格
-            end_price = None
-            if stock_prices_cache and code in stock_prices_cache:
-                prices = stock_prices_cache[code]
-                if snap_date in prices.index:
-                    end_price = prices.loc[snap_date]
-            if end_price is None:
-                end_price = end_snap[code].get('avg_cost', 0)
-            ev = qty * end_price
-            sector_data[sector]["end_value"] += ev
-            total_end_value += ev
+        sv = qty * start_price
+        sector_data[sector]["start_value"] += sv
+        total_start_value += sv
+
+        # 期末市值：用期末市场价 × 期初数量（衡量价格变动，不受交易影响）
+        end_price = None
+        if stock_prices_cache and code in stock_prices_cache:
+            prices = stock_prices_cache[code]
+            end_snap_dt = pd.to_datetime(end_date)
+            valid = prices[prices.index <= end_snap_dt]
+            if not valid.empty:
+                end_price = float(valid.iloc[-1])
+        if end_price is None:
+            end_price = start_price  # 无数据则假设不变
+
+        ev = qty * end_price
+        sector_data[sector]["end_value"] += ev
 
     if total_start_value == 0:
         return {}
@@ -290,7 +278,7 @@ def brinson_attribution(portfolio_sectors, benchmark_sectors):
     }
 
 
-def brinson_analysis(snapshots, portfolio_values, benchmark_prices, start_date, end_date):
+def brinson_analysis(snapshots, portfolio_values, benchmark_prices, start_date, end_date, stock_prices_cache=None):
     """Brinson 归因分析主入口
 
     Args:
@@ -299,6 +287,7 @@ def brinson_analysis(snapshots, portfolio_values, benchmark_prices, start_date, 
         benchmark_prices: 基准价格 DataFrame
         start_date: 开始日期
         end_date: 结束日期
+        stock_prices_cache: 股票价格缓存 {code: Series(date→close)}
 
     Returns:
         dict: Brinson 归因结果，包含 details 和 totals
@@ -325,7 +314,7 @@ def brinson_analysis(snapshots, portfolio_values, benchmark_prices, start_date, 
 
     # 1. 分类组合持仓行业
     print("  分类组合持仓行业...")
-    portfolio_sectors = classify_portfolio_sectors(snapshots, start_date, end_date)
+    portfolio_sectors = classify_portfolio_sectors(snapshots, start_date, end_date, stock_prices_cache)
 
     if not portfolio_sectors:
         print("  警告: 无法获取组合行业分类，跳过 Brinson 归因")

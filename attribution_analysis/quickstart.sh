@@ -1,6 +1,7 @@
 #!/bin/bash
 # 策略归因分析 - 快速启动脚本
 # 用法: ./quickstart.sh [PDF文件路径] [开始日期] [结束日期]
+# 选项: --force-refresh  清空缓存重新执行
 
 set -e
 
@@ -16,11 +17,24 @@ info()  { echo -e "${GREEN}[✓]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 
-# ── 参数 ──
-PDF_INPUT="${1:-data/raw/$(ls data/raw/*.pdf 2>/dev/null | head -1 | xargs basename 2>/dev/null)}"
-START_DATE="${2:-2026-01-01}"
-END_DATE="${3:-2026-03-31}"
-TRADES_CSV="data/trades.csv"
+# ── 解析参数 ──
+FORCE_REFRESH=false
+POSITIONAL=()
+for arg in "$@"; do
+    case $arg in
+        --force-refresh)
+            FORCE_REFRESH=true
+            ;;
+        *)
+            POSITIONAL+=("$arg")
+            ;;
+    esac
+done
+
+PDF_INPUT="${POSITIONAL[0]:-data/raw/$(ls data/raw/*.pdf 2>/dev/null | head -1 | xargs basename 2>/dev/null)}"
+START_DATE="${POSITIONAL[1]:-2026-01-01}"
+END_DATE="${POSITIONAL[2]:-2026-03-31}"
+DATA_DIR="data"
 REPORT="output/report.md"
 
 # ── 检查环境 ──
@@ -55,24 +69,38 @@ else
     info "依赖已安装"
 fi
 
-# ── Step 1: 转换 PDF ──
-if [ ! -f "$TRADES_CSV" ]; then
+# ── Step 1: 转换 PDF → data/ 目录 ──
+CONVERT_ARGS=""
+if [ "$FORCE_REFRESH" = true ]; then
+    CONVERT_ARGS="--force-refresh"
+    # 清空已有数据文件，强制重新转换
+    rm -f "$DATA_DIR/trades.csv" "$DATA_DIR/holdings.csv" "$DATA_DIR/cash_flows.csv"
+    info "已清空数据文件，将重新转换"
+fi
+
+if [ ! -f "$DATA_DIR/trades.csv" ]; then
     if [ -z "$PDF_INPUT" ] || [ ! -f "$PDF_INPUT" ]; then
         error "未找到 PDF 文件。用法: ./quickstart.sh <PDF路径> [开始日期] [结束日期]"
     fi
-    info "转换 PDF: $PDF_INPUT"
+    info "转换 PDF: $PDF_INPUT → $DATA_DIR/"
     python3 scripts/convert_broker_data.py \
         --input "$PDF_INPUT" \
-        --output "$TRADES_CSV"
-    info "交割单已转换 → $TRADES_CSV"
+        --output-dir "$DATA_DIR" \
+        $CONVERT_ARGS
+    info "数据文件已生成 → $DATA_DIR/{trades,holdings,cash_flows}.csv"
 else
-    info "交割单已存在: $TRADES_CSV (跳过转换)"
+    info "数据文件已存在: $DATA_DIR/trades.csv (跳过转换)"
 fi
 
 # ── Step 2: 运行分析 ──
 info "运行归因分析 ($START_DATE ~ $END_DATE)..."
+
+ANALYSIS_ARGS="--trades $DATA_DIR/trades.csv"
+[ -f "$DATA_DIR/holdings.csv" ] && ANALYSIS_ARGS="$ANALYSIS_ARGS --holdings $DATA_DIR/holdings.csv"
+[ -f "$DATA_DIR/cash_flows.csv" ] && ANALYSIS_ARGS="$ANALYSIS_ARGS --cash-flows $DATA_DIR/cash_flows.csv"
+
 python3 scripts/attribution.py \
-    --trades "$TRADES_CSV" \
+    $ANALYSIS_ARGS \
     --start-date "$START_DATE" \
     --end-date "$END_DATE" \
     --output "$REPORT"

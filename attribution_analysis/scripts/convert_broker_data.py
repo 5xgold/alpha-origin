@@ -1,20 +1,38 @@
-"""券商数据转换脚本：PDF/截图 → 标准 CSV"""
+"""券商数据转换脚本：PDF → 标准 CSV（trades + holdings + cash_flows）"""
 
 import re
 import sys
+import shutil
 import argparse
 import pdfplumber
 import pandas as pd
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
-from config import COLUMN_MAPPING, STANDARD_COLUMNS
+from config import (
+    STANDARD_COLUMNS, CACHE_DIR,
+    EXTERNAL_FLOW_TYPES, COLLATERAL_FLOW_TYPES, MONETARY_FUND_CODE,
+)
+from scripts.data_provider import get_stock_prices, _is_hk
+
+
+# PDF 交易流水标准列名（17列）
+TXN_COLUMNS = [
+    'date', 'market', 'account', 'currency', 'business_type',
+    'code', 'name', 'quantity', 'price', 'inventory',
+    'amount', 'balance',
+    'brokerage_fee', 'stamp_duty', 'transfer_fee', 'other_fee', 'remark'
+]
 
 
 def parse_pdf(pdf_path):
     """解析 PDF 交割单 - 跨页提取所有交易数据
 
-    交易数据从「客户资金明细」标题后开始，跨多页延续直到「客户持股清单」。
-    数据行以日期 (2026...) 开头，按空格分割为 17 个字段。
+    处理两种行格式：
+    - 17字段：标准交易行（含证券代码和名称）
+    - 15字段：无证券代码的行（港股通组合费、银证转账等）
+
+    Returns:
+        (headers, rows) — headers 为 TXN_COLUMNS，rows 为 list of lists
     """
     all_rows = []
     in_section = False
@@ -25,62 +43,60 @@ def parse_pdf(pdf_path):
             if not text:
                 continue
 
-            # 遇到持股清单说明交易流水结束
-            if '客户持股清单' in text and in_section:
-                # 这一页可能前半部分还有交易数据，后半部分是持股清单
-                lines = text.split('\n')
-                for line in lines:
-                    if '客户持股清单' in line:
-                        break
-                    if line.strip().startswith('2026'):
-                        parts = line.strip().split()
-                        if len(parts) >= 17:
-                            all_rows.append(parts[:17])
-                break
+            lines = text.split('\n')
+            for line in lines:
+                stripped = line.strip()
 
-            if '客户资金明细' in text:
-                in_section = True
+                if '客户持股清单' in stripped and in_section:
+                    return TXN_COLUMNS, all_rows
 
-            if in_section:
-                lines = text.split('\n')
-                for line in lines:
-                    if line.strip().startswith('2026'):
-                        parts = line.strip().split()
-                        if len(parts) >= 17:
-                            all_rows.append(parts[:17])
+                if '客户资金明细' in stripped:
+                    in_section = True
+                    continue
+
+                if in_section and stripped.startswith('2026'):
+                    parts = stripped.split()
+                    if len(parts) >= 17:
+                        all_rows.append(parts[:17])
+                    elif len(parts) >= 15:
+                        # 无证券代码/名称的行，补齐到17列
+                        row = parts[:5] + ['', ''] + parts[5:15]
+                        all_rows.append(row)
 
     if not all_rows:
         raise ValueError("PDF 中未找到客户资金明细数据")
 
-    headers = ['date', 'market', 'account', 'currency', 'business_type', 'code', 'name',
-               'quantity', 'price', 'inventory', 'amount', 'balance',
-               'brokerage_fee', 'stamp_duty', 'transfer_fee', 'other_fee', 'remark']
+    return TXN_COLUMNS, all_rows
 
-    return headers, all_rows
+
+def _build_raw_df(headers, rows):
+    """构建原始交易 DataFrame（含全部17列，数值已转换）"""
+    df = pd.DataFrame(rows, columns=headers)
+    df['date'] = pd.to_datetime(df['date'], format='%Y%m%d')
+    for col in ['quantity', 'price', 'inventory', 'amount', 'balance',
+                'brokerage_fee', 'stamp_duty', 'transfer_fee', 'other_fee']:
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    return df
 
 
 def normalize_columns(headers, rows):
-    """列名标准化"""
+    """列名标准化 → STANDARD_COLUMNS（14列 trades）"""
     df = pd.DataFrame(rows, columns=headers)
 
-    # 检查必需列
     required = ["date", "code", "name", "quantity", "price", "amount"]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"缺少必需列: {missing}")
 
-    # 补充缺失列
     for col in STANDARD_COLUMNS:
         if col not in df.columns:
             df[col] = ""
 
-    # 推断买卖方向（必须在 net_amount 之前）
     df["direction"] = df.apply(infer_direction, axis=1)
-
-    # 计算 net_amount
     df["net_amount"] = df.apply(calculate_net_amount, axis=1)
 
-    # 过滤掉非股票交易（场外开基、申购配号等）
+    # 过滤掉非股票交易
+    df = df[df['code'].notna() & (df['code'] != '')]
     df = df[df['market'].isin(['上海', '深圳', '沪港通']) | df['direction'].isin(['分红', '扣税'])]
     df = df[df['direction'].isin(['买入', '卖出', '分红', '扣税'])]
 
@@ -89,11 +105,9 @@ def normalize_columns(headers, rows):
 
 def infer_direction(row):
     """推断买卖方向"""
-    # 从业务类型推断
     business_type = str(row.get("business_type", ""))
     remark = str(row.get("remark", ""))
 
-    # 分红/扣税识别（优先于买卖判断）
     if "股息红利税补缴" in business_type or "股息红利税补缴" in remark:
         return "扣税"
     if "股息红利发放" in business_type or "红利入账" in business_type or \
@@ -105,7 +119,6 @@ def infer_direction(row):
     if "卖" in business_type or "卖" in remark or "Sell" in business_type:
         return "卖出"
 
-    # 从金额符号推断（买入为负）
     amount = float(row.get("amount", 0) or 0)
     if amount < 0:
         return "买入"
@@ -122,7 +135,6 @@ def calculate_net_amount(row):
     stamp = float(row.get("stamp_duty", 0))
     transfer = float(row.get("transfer_fee", 0))
     other = float(row.get("other_fee", 0))
-
     total_fee = fee + stamp + transfer + other
 
     if row.get("direction") == "买入":
@@ -131,36 +143,111 @@ def calculate_net_amount(row):
         return amount - total_fee
 
 
-def convert_pdf_to_csv(pdf_path, output_path):
-    """主函数：PDF → CSV"""
-    print(f"正在解析 PDF: {pdf_path}")
-    headers, rows = parse_pdf(pdf_path)
+def extract_cash_flows(raw_df):
+    """从原始交易流水提取外部资金流（银证转账 + 担保品划转）
 
-    print(f"提取到 {len(rows)} 行数据")
-    print(f"表头: {headers}")
+    Returns:
+        DataFrame[date, amount, type]
+    """
+    flows = []
 
-    print("正在标准化列名...")
-    df = normalize_columns(headers, rows)
+    # 1. 银证转账
+    bank_mask = raw_df['business_type'].isin(EXTERNAL_FLOW_TYPES)
+    for _, row in raw_df.loc[bank_mask].iterrows():
+        flows.append({
+            'date': row['date'].strftime('%Y-%m-%d'),
+            'amount': row['amount'],
+            'type': row['business_type'],
+        })
 
-    print(f"转换完成，共 {len(df)} 条交易记录")
-    print(f"保存到: {output_path}")
-    df.to_csv(output_path, index=False, encoding="utf-8-sig")
+    # 2. 担保品划转 — 用市价估算
+    collateral_mask = raw_df['business_type'].isin(COLLATERAL_FLOW_TYPES)
+    collateral_txns = raw_df.loc[collateral_mask].copy()
 
-    # 打印前5行供用户确认
-    print("\n前5行数据预览：")
-    print(df.head().to_string())
+    if not collateral_txns.empty:
+        codes = [c for c in collateral_txns['code'].unique() if c and c != MONETARY_FUND_CODE]
+        if codes:
+            date_min = raw_df['date'].min().strftime('%Y%m%d')
+            date_max = raw_df['date'].max().strftime('%Y%m%d')
+
+            stock_prices = {}
+            for code in codes:
+                try:
+                    df = get_stock_prices(code, date_min, date_max)
+                    if df is not None and not df.empty:
+                        # get_stock_prices 返回 DataFrame[date,open,close,...]
+                        # 转为 Series[date → close] 方便查价
+                        s = df.set_index('date')['close']
+                        s.index = pd.to_datetime(s.index)
+                        stock_prices[code] = s
+                except Exception:
+                    pass
+
+            # 港币汇率（从沪港通交易推算）
+            hk_trades = raw_df[
+                (raw_df['market'] == '沪港通') &
+                (raw_df['business_type'].isin(['证券买入', '证券卖出']))
+            ]
+            hkd_rates = {}
+            for _, t in hk_trades.iterrows():
+                qty = abs(t['quantity'])
+                price_hkd = t['price']
+                fees = t['brokerage_fee'] + t['stamp_duty'] + t['transfer_fee'] + t['other_fee']
+                gross_cny = abs(t['amount']) - fees
+                if qty > 0 and price_hkd > 0:
+                    hkd_rates[t['date']] = gross_cny / (qty * price_hkd)
+
+            for _, t in collateral_txns.iterrows():
+                code = t['code']
+                qty = abs(t['quantity'])
+                date = t['date']
+                biz = t['business_type']
+
+                price = None
+                if code in stock_prices and date in stock_prices[code].index:
+                    price = stock_prices[code].loc[date]
+                elif code in stock_prices and not stock_prices[code].empty:
+                    valid = stock_prices[code][stock_prices[code].index <= date]
+                    if not valid.empty:
+                        price = valid.iloc[-1]
+
+                if price is not None:
+                    if _is_hk(str(code)):
+                        rate = 1.0
+                        for d in sorted(hkd_rates.keys()):
+                            if d <= date:
+                                rate = hkd_rates[d]
+                        price *= rate
+                    market_value = price * qty
+                else:
+                    buy_txns = raw_df[(raw_df['code'] == code) &
+                                     (raw_df['business_type'] == '证券买入') &
+                                     (raw_df['date'] <= date)]
+                    if not buy_txns.empty:
+                        avg_price = abs(buy_txns['amount'].sum()) / buy_txns['quantity'].sum()
+                        market_value = avg_price * qty
+                    else:
+                        market_value = 0
+
+                amount = -market_value if biz == '担保品划出' else market_value
+                flows.append({
+                    'date': date.strftime('%Y-%m-%d'),
+                    'amount': amount,
+                    'type': biz,
+                })
+
+    if not flows:
+        return pd.DataFrame(columns=['date', 'amount', 'type'])
+
+    result = pd.DataFrame(flows)
+    result = result.groupby(['date', 'type'])['amount'].sum().reset_index()
+    result = result.sort_values('date').reset_index(drop=True)
+    return result
 
 
 def parse_shareholding(pdf_path):
-    """解析 PDF 客户持股清单 → DataFrame[code, name, market, quantity, cost_price]
-
-    处理逻辑：
-    - 数据行以账户号开头（8位数字），格式：账户 代码 名称 币种 市场 库存数 可用数 参考成本 收盘价 收盘市值 累计盈亏
-    - 港股名称可能跨行（名称单独一行 + 数据行 + 名称续行），需要合并
-    - 跳过场外产品持仓（OTC）
-    """
+    """解析 PDF 客户持股清单 → DataFrame[code, name, market, quantity, cost_price]"""
     holdings = []
-    # 匹配数据行：账户号(8位) + 代码 + ... 数值字段
     data_pattern = re.compile(r'^(\d{8})\s+(\S+)\s+(.+)$')
 
     with pdfplumber.open(pdf_path) as pdf:
@@ -175,7 +262,6 @@ def parse_shareholding(pdf_path):
             while i < len(lines):
                 line = lines[i].strip()
 
-                # 进入场外产品区域后停止
                 if '场外产品' in line or 'OTC' in line:
                     in_otc = True
                 if '客户资产信息' in line or 'Details of Client Assets' in line:
@@ -186,7 +272,6 @@ def parse_shareholding(pdf_path):
 
                 m = data_pattern.match(line)
                 if m and m.group(1) != '70617488':
-                    # 表头行等，跳过
                     i += 1
                     continue
 
@@ -194,17 +279,11 @@ def parse_shareholding(pdf_path):
                     rest = m.group(3)
                     parts = rest.split()
 
-                    # 正常行：名称 币种 市场 库存数 可用数 参考成本 收盘价 收盘市值 累计盈亏
-                    # 至少需要 名称 + 币种 + 市场 + 6个数值 = 9 个 token
                     if len(parts) >= 9:
                         code = m.group(2)
-                        # 从右边取6个数值字段
                         nums = parts[-6:]
                         market = parts[-7]
-                        # 名称 = 中间部分（去掉币种和市场和数值）
-                        # parts[0:-7] 去掉 币种(人民币) 市场 和 6个数值
                         name = ' '.join(parts[0:-8]) if len(parts) > 9 else parts[0]
-                        # 币种在 parts[-8]
 
                         holdings.append({
                             'code': code,
@@ -214,24 +293,17 @@ def parse_shareholding(pdf_path):
                             'cost_price': float(nums[2]),
                         })
                     else:
-                        # 港股情况：名称跨行，数据行缺名称
-                        # 向上找名称行（纯中文，非分隔线/表头）
                         code = m.group(2)
-                        # rest 里没有名称，直接是 "人民币 市场 数值..."
-                        all_parts = [m.group(2)] + parts
-                        # 尝试从上一行和下一行拼名称
                         name_parts = []
-                        # 上一行
                         if i > 0:
                             prev = lines[i - 1].strip()
                             if prev and '---' not in prev and '客户' not in prev and not prev[0].isdigit():
                                 name_parts.append(prev)
-                        # 下一行
                         if i + 1 < len(lines):
                             nxt = lines[i + 1].strip()
                             if nxt and '---' not in nxt and '客户' not in nxt and not nxt[0].isdigit() and '以下' not in nxt:
                                 name_parts.append(nxt)
-                                i += 1  # 跳过续行
+                                i += 1
 
                         name = ''.join(name_parts) if name_parts else ''
                         nums = parts[-6:]
@@ -251,35 +323,58 @@ def parse_shareholding(pdf_path):
     return pd.DataFrame(holdings)
 
 
-def convert_shareholding_to_csv(pdf_path, output_path):
-    """PDF 持股清单 → holdings CSV"""
-    print(f"正在解析持股清单: {pdf_path}")
-    df = parse_shareholding(pdf_path)
+def export_all(pdf_path, output_dir, force_refresh=False):
+    """一次性输出 trades.csv + holdings.csv + cash_flows.csv"""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    if df.empty:
-        print("未找到持股数据")
-        return
+    if force_refresh:
+        cache_dir = Path(CACHE_DIR)
+        if cache_dir.exists():
+            shutil.rmtree(cache_dir)
+            print(f"已清空行情缓存: {cache_dir}")
 
-    print(f"提取到 {len(df)} 条持仓记录")
-    print(df.to_string(index=False))
+    print(f"正在解析 PDF: {pdf_path}")
+    headers, rows = parse_pdf(pdf_path)
+    print(f"提取到 {len(rows)} 行原始数据")
 
-    df.to_csv(output_path, index=False, encoding="utf-8-sig")
-    print(f"\n保存到: {output_path}")
+    raw_df = _build_raw_df(headers, rows)
+
+    # trades.csv
+    trades_path = output_dir / "trades.csv"
+    print("正在生成 trades.csv...")
+    trades_df = normalize_columns(headers, rows)
+    trades_df.to_csv(trades_path, index=False, encoding="utf-8-sig")
+    print(f"  → {trades_path} ({len(trades_df)} 条交易)")
+
+    # holdings.csv
+    holdings_path = output_dir / "holdings.csv"
+    print("正在生成 holdings.csv...")
+    holdings_df = parse_shareholding(pdf_path)
+    holdings_df.to_csv(holdings_path, index=False, encoding="utf-8-sig")
+    print(f"  → {holdings_path} ({len(holdings_df)} 条持仓)")
+
+    # cash_flows.csv
+    cash_flows_path = output_dir / "cash_flows.csv"
+    print("正在生成 cash_flows.csv...")
+    cash_flows_df = extract_cash_flows(raw_df)
+    cash_flows_df.to_csv(cash_flows_path, index=False, encoding="utf-8-sig")
+    print(f"  → {cash_flows_path} ({len(cash_flows_df)} 条资金流)")
+
+    return trades_df, holdings_df, cash_flows_df
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="券商数据转换")
-    parser.add_argument("--input", required=True, help="输入文件路径（PDF）")
-    parser.add_argument("--output", required=True, help="输出 CSV 路径")
-    parser.add_argument("--holdings", action="store_true", help="提取持股清单（而非交割单）")
+    parser = argparse.ArgumentParser(description="券商数据转换：PDF → 标准 CSV")
+    parser.add_argument("--input", required=True, help="输入 PDF 文件路径")
+    parser.add_argument("--output-dir", required=True, help="输出目录（生成 trades + holdings + cash_flows）")
+    parser.add_argument("--force-refresh", action="store_true",
+                        help="清空行情缓存后重新执行")
 
     args = parser.parse_args()
 
     try:
-        if args.holdings:
-            convert_shareholding_to_csv(args.input, args.output)
-        else:
-            convert_pdf_to_csv(args.input, args.output)
+        export_all(args.input, args.output_dir, force_refresh=args.force_refresh)
         print("\n✓ 转换成功")
     except Exception as e:
         print(f"\n✗ 转换失败: {e}")

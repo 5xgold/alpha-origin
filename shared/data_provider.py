@@ -162,7 +162,7 @@ def _fetch_with_fallback(sources, code_str, start_date, end_date):
 def get_stock_prices(code, start_date, end_date):
     """获取股票历史行情（带缓存、多数据源 fallback）
 
-    A股 → baostock, 港股 → FutuOpenD → Yahoo Finance → 东方财富
+    A股 → baostock, 港股 → FutuOpenD → 东方财富
     返回 DataFrame[date, open, close, high, low, volume]
     """
     code_str = str(code).strip()

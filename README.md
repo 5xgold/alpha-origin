@@ -134,7 +134,7 @@ cd risk_control
 | 市场 | 数据源 | 备注 |
 |------|--------|------|
 | A股行情 | baostock | 不复权 |
-| 港股行情 | FutuOpenD → Yahoo Finance → 东方财富 | 多源 fallback，不复权 |
+| 港股行情 | FutuOpenD → 东方财富 | 多源 fallback，不复权 |
 | 指数/行业 | baostock + 东方财富 | 成分股 & 申万行业指数 |
 
 ## 项目结构
@@ -184,11 +184,9 @@ PythonProjects/
 
 ## 技术栈
 
-- 策略/分析：Python 3.14 / pandas / statsmodels / XGBoost
-- 数据管道/风控引擎：Go
-- LLM：DeepSeek API
-- 行情：baostock / futu-api / yfinance
+- Python 3.14 / pandas / statsmodels
+- 行情数据：baostock（A股）/ futu-api（港股）
+- PDF 解析：pdfplumber
 - 可视化：pyecharts
-- 数据库：ClickHouse(行情) + PostgreSQL(业务)
 
 完整转型计划详见 [docs/quant-transformation-plan.md](docs/quant-transformation-plan.md)

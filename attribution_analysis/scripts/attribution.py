@@ -2,6 +2,7 @@
 
 import sys
 import argparse
+from datetime import datetime
 from pathlib import Path
 import pandas as pd
 import numpy as np
@@ -576,7 +577,7 @@ def main():
     if args.output:
         output_path = args.output
     else:
-        output_path = f"{OUTPUT_DIR}/{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}_report.md"
+        output_path = f"{OUTPUT_DIR}/{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}_report_{datetime.now().strftime('%H%M')}.md"
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     generate_md_report(returns_df, results, output_path, start, end, brinson_result)

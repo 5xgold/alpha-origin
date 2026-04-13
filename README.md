@@ -53,7 +53,7 @@ python scripts/attribution.py --trades data/trades.csv --holdings data/holdings.
 ### 🔲 模块2：风控系统 — 三道防线，活下来最重要
 
 #### 第一道：仓位管理（事前）
-- 单只股票 ≤ 10%，单一行业 ≤ 25%
+- 单只股票 ≤ 15%，单一行业 ≤ 30%
 - 总仓位根据波动率动态调整（VIX<15→80% / 15-25→60% / 25-35→40% / >35→20%）
 - 新策略先用 1/4 仓位试水
 
@@ -118,15 +118,28 @@ python scripts/attribution.py --trades data/trades.csv --holdings data/holdings.
 PythonProjects/
 ├── attribution_analysis/        # 模块1：策略归因分析 ✅
 │   ├── scripts/
-│   │   ├── attribution.py       # 核心分析
-│   │   ├── data_provider.py     # 多数据源行情
-│   │   ├── convert_broker_data.py
-│   │   └── brinson.py           # Brinson 归因
-│   ├── config.py
+│   │   ├── attribution.py       # 核心归因分析（Alpha/Beta + 报告生成）
+│   │   ├── brinson.py           # Brinson 行业归因（BHB 模型）
+│   │   ├── data_provider.py     # 多数据源行情（baostock/futu/yfinance/eastmoney）
+│   │   ├── convert_broker_data.py  # PDF 交割单 → 标准 CSV
+│   │   └── pdf_portfolio.py     # PDF 持仓提取
+│   ├── config.py                # 全局配置（基准/缓存/外部服务）
+│   ├── quickstart.sh            # 一键运行脚本
+│   ├── requirements.txt
+│   ├── docs/                    # 子模块文档
+│   │   ├── architecture.md
+│   │   └── csv-format.md
+│   ├── data/
+│   │   ├── raw/                 # 原始 PDF 对账单
+│   │   └── cache/               # 行情数据缓存
+│   ├── output/                  # 生成的分析报告
 │   └── README.md
 ├── docs/
 │   ├── quant-transformation-plan.md  # 完整转型执行计划
+│   ├── macro-indicators-guide.md     # 宏观指标观测指南
 │   └── superpowers/                  # 设计文档 & 实现计划
+│       ├── specs/               # 需求设计
+│       └── plans/               # 实施计划
 └── README.md
 ```
 

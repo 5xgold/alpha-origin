@@ -14,7 +14,7 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).parent.parent))
 from config import CACHE_DIR, SECTOR_CACHE_DAYS, BENCHMARK_INDEX, parse_benchmark_config
-from scripts.data_provider import get_stock_sector, get_sw_sector_returns, get_index_constituents
+from shared.data_provider import get_stock_sector, get_sw_sector_returns, get_index_constituents
 
 
 def classify_portfolio_sectors(snapshots, start_date, end_date, stock_prices_cache=None):

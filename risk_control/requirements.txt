@@ -1,0 +1,5 @@
+pandas
+numpy
+baostock
+requests
+python-dotenv

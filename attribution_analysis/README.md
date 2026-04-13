@@ -138,21 +138,24 @@ A: 说明策略跑输市场。可能原因：
 
 ```
 attribution_analysis/
-├── config.py              # 全局配置
+├── config.py              # 归因专属配置（基准/报告/列映射）
 ├── requirements.txt       # 依赖列表
-├── README.md             # 本文档
+├── quickstart.sh          # 一键运行脚本
+├── README.md              # 本文档
 ├── data/
-│   ├── raw/              # 原始PDF文件
-│   ├── cache/            # 行情数据缓存
-│   └── trades.csv        # 标准格式交割单
+│   ├── raw/               # 原始PDF文件
+│   ├── trades.csv         # 标准格式交割单
+│   ├── holdings.csv       # 持仓快照
+│   └── cash_flows.csv     # 外部资金流
 ├── scripts/
 │   ├── convert_broker_data.py  # PDF转换脚本
 │   ├── attribution.py          # 核心分析脚本
 │   ├── brinson.py              # Brinson 归因模块（BHB 模型）
-│   └── data_provider.py        # 多数据源行情获取
-├── output/               # 生成的报告
-└── templates/            # HTML模板（预留）
+│   └── pdf_portfolio.py        # PDF 持仓提取
+└── output/                # 生成的报告
 ```
+
+> 行情数据获取已迁移到 `../shared/data_provider.py`，缓存在 `../data/cache/`，两模块共用。
 
 ## 许可证
 

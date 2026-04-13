@@ -1,7 +1,8 @@
-"""券商数据转换脚本：PDF → 标准 CSV（trades + holdings + cash_flows）"""
+"""券商数据转换脚本：PDF → 标准 CSV（trades + holdings + cash_flows + asset_summary）"""
 
 import re
 import sys
+import json
 import shutil
 import argparse
 import pdfplumber
@@ -12,7 +13,7 @@ from config import (
     STANDARD_COLUMNS, CACHE_DIR,
     EXTERNAL_FLOW_TYPES, COLLATERAL_FLOW_TYPES, MONETARY_FUND_CODE,
 )
-from scripts.data_provider import get_stock_prices, _is_hk
+from shared.data_provider import get_stock_prices, _is_hk
 
 
 # PDF 交易流水标准列名（17列）
@@ -323,6 +324,38 @@ def parse_shareholding(pdf_path):
     return pd.DataFrame(holdings)
 
 
+def parse_asset_summary(pdf_path):
+    """解析 PDF 客户资产信息 → dict
+
+    Returns:
+        dict: {fund_balance, available_capital, total_market_value, total_assets}
+    """
+    pattern = re.compile(
+        r'资金余额.*?[：:]\s*([\d,.]+).*?'
+        r'可用资金.*?[：:]\s*([\d,.]+).*?'
+        r'市值合计.*?[：:]\s*([\d,.]+).*?'
+        r'资产合计.*?[：:]\s*([\d,.]+)',
+        re.DOTALL
+    )
+
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            if '客户资产信息' not in text and 'Details of Client Assets' not in text:
+                continue
+
+            m = pattern.search(text)
+            if m:
+                return {
+                    'fund_balance': float(m.group(1).replace(',', '')),
+                    'available_capital': float(m.group(2).replace(',', '')),
+                    'total_market_value': float(m.group(3).replace(',', '')),
+                    'total_assets': float(m.group(4).replace(',', '')),
+                }
+
+    return {}
+
+
 def export_all(pdf_path, output_dir, force_refresh=False):
     """一次性输出 trades.csv + holdings.csv + cash_flows.csv"""
     output_dir = Path(output_dir)
@@ -360,6 +393,17 @@ def export_all(pdf_path, output_dir, force_refresh=False):
     cash_flows_df = extract_cash_flows(raw_df)
     cash_flows_df.to_csv(cash_flows_path, index=False, encoding="utf-8-sig")
     print(f"  → {cash_flows_path} ({len(cash_flows_df)} 条资金流)")
+
+    # asset_summary.json
+    asset_path = output_dir / "asset_summary.json"
+    print("正在解析资产信息...")
+    asset_summary = parse_asset_summary(pdf_path)
+    if asset_summary:
+        with open(asset_path, 'w', encoding='utf-8') as f:
+            json.dump(asset_summary, f, ensure_ascii=False, indent=2)
+        print(f"  → {asset_path} (总资产: ¥{asset_summary['total_assets']:,.0f})")
+    else:
+        print("  ⚠ 未能解析客户资产信息")
 
     return trades_df, holdings_df, cash_flows_df
 

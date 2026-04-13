@@ -14,7 +14,7 @@ import numpy as np
 
 sys.path.append(str(Path(__file__).parent.parent))
 from config import MONETARY_FUND_CODE, EXTERNAL_FLOW_TYPES
-from scripts.data_provider import get_stock_prices, _is_hk
+from shared.data_provider import get_stock_prices, _is_hk
 
 
 # PDF 交易流水标准列名（17列）

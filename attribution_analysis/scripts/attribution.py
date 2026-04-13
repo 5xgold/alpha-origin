@@ -13,7 +13,7 @@ from config import (
     REPORT_TITLE, OUTPUT_DIR,
     parse_benchmark_config,
 )
-from scripts.data_provider import get_stock_prices, get_benchmark_prices, get_composite_benchmark_prices
+from shared.data_provider import get_stock_prices, get_benchmark_prices, get_composite_benchmark_prices
 from scripts.brinson import brinson_analysis
 
 

@@ -127,25 +127,25 @@ def check_circuit_breaker(portfolio_df, prices_dict):
     if pv.empty or len(pv) < 2:
         return result
 
-    # 日回撤
+    # 日回撤：最近 2 个交易日的当前回撤
     if len(pv) >= 2:
-        daily_ret = (pv.iloc[-1] - pv.iloc[-2]) / pv.iloc[-2]
-        result["daily"]["drawdown"] = float(daily_ret)
-        if daily_ret <= -CIRCUIT_BREAKER["daily"]:
+        daily_dd = calc_drawdown(pv.iloc[-2:])["current"]
+        result["daily"]["drawdown"] = float(daily_dd)
+        if daily_dd <= -CIRCUIT_BREAKER["daily"]:
             result["daily"]["triggered"] = True
 
-    # 周回撤（最近5个交易日）
+    # 周回撤：最近 5 个交易日窗口的当前回撤
     if len(pv) >= 6:
-        weekly_ret = (pv.iloc[-1] - pv.iloc[-6]) / pv.iloc[-6]
-        result["weekly"]["drawdown"] = float(weekly_ret)
-        if weekly_ret <= -CIRCUIT_BREAKER["weekly"]:
+        weekly_dd = calc_drawdown(pv.iloc[-6:])["current"]
+        result["weekly"]["drawdown"] = float(weekly_dd)
+        if weekly_dd <= -CIRCUIT_BREAKER["weekly"]:
             result["weekly"]["triggered"] = True
 
-    # 月回撤（最近20个交易日）
+    # 月回撤：最近 20 个交易日窗口的当前回撤
     if len(pv) >= 21:
-        monthly_ret = (pv.iloc[-1] - pv.iloc[-21]) / pv.iloc[-21]
-        result["monthly"]["drawdown"] = float(monthly_ret)
-        if monthly_ret <= -CIRCUIT_BREAKER["monthly"]:
+        monthly_dd = calc_drawdown(pv.iloc[-21:])["current"]
+        result["monthly"]["drawdown"] = float(monthly_dd)
+        if monthly_dd <= -CIRCUIT_BREAKER["monthly"]:
             result["monthly"]["triggered"] = True
 
     # 最严重的触发决定动作

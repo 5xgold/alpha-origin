@@ -318,8 +318,7 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
             break
 
     if df is None or df.empty:
-        print(f"错误: 获取基准指数 {benchmark_index} 失败")
-        sys.exit(1)
+        raise RuntimeError(f"获取基准指数 {benchmark_index} 失败")
 
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -327,8 +326,7 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
     df = df.dropna(subset=["close"])
 
     if df.empty:
-        print(f"错误: 指数 {benchmark_index} 在 {start_date}~{end_date} 无数据")
-        sys.exit(1)
+        raise RuntimeError(f"指数 {benchmark_index} 在 {start_date}~{end_date} 无数据")
 
     df.to_csv(cache_file, index=False)
     return df

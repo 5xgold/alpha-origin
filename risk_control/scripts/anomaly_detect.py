@@ -113,9 +113,10 @@ def detect_anomalies(portfolio_df, prices_dict):
     signals.extend(_check_correlation(held_prices))
     signals.extend(_check_external_shock())
 
-    alert_count = len(signals)
+    signal_count = len(signals)
+    alert_count = len({sig["type"] for sig in signals})
 
-    # 根据信号数量决定动作
+    # 根据信号类别数决定动作，避免相关性成对膨胀导致动作过度升级
     action = "safe"
     for threshold, act in sorted(ALERT_ACTIONS.items()):
         if alert_count >= threshold:
@@ -123,6 +124,7 @@ def detect_anomalies(portfolio_df, prices_dict):
 
     return {
         "signals": signals,
+        "signal_count": signal_count,
         "alert_count": alert_count,
         "action": action,
     }

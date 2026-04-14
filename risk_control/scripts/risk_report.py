@@ -71,26 +71,54 @@ def fetch_prices(portfolio_df, lookback_days=None):
 
 
 def enrich_portfolio(portfolio_df, prices_dict):
-    """给持仓添加 current_price 和 market_value 列"""
+    """给持仓添加 current_price / market_value / price_status 列"""
     current_prices = []
     market_values = []
+    price_statuses = []
 
     for _, row in portfolio_df.iterrows():
         code = str(row["code"])
         qty = float(row["quantity"])
+        cost = float(row["cost_price"])
 
         if code in prices_dict and not prices_dict[code].empty:
             price = float(prices_dict[code]["close"].iloc[-1])
+            status = "market"
+            market_value = price * qty
+        elif cost > 0:
+            # 行情缺失时用成本价兜底，避免把真实持仓静默记成 0
+            price = cost
+            status = "cost_fallback"
+            market_value = price * qty
         else:
-            price = float(row["cost_price"])  # fallback
+            price = pd.NA
+            status = "missing"
+            market_value = pd.NA
 
         current_prices.append(price)
-        market_values.append(price * qty)
+        market_values.append(market_value)
+        price_statuses.append(status)
 
     portfolio_df = portfolio_df.copy()
     portfolio_df["current_price"] = current_prices
     portfolio_df["market_value"] = market_values
+    portfolio_df["price_status"] = price_statuses
     return portfolio_df
+
+
+def validate_portfolio_prices(portfolio_df):
+    """校验持仓估值输入，阻止生成误导性报告。"""
+    missing_rows = portfolio_df[portfolio_df["price_status"] == "missing"]
+    if missing_rows.empty:
+        return
+
+    missing_codes = ", ".join(
+        f"{row['name']}({row['code']})" for _, row in missing_rows.iterrows()
+    )
+    raise ValueError(
+        "以下持仓缺少行情且成本价为 0，无法可靠估值: "
+        f"{missing_codes}. 请补充成本价或检查行情源后重试。"
+    )
 
 
 # ═══════════════════════════════════════════
@@ -117,7 +145,9 @@ def _fmt_pct(v, width=6):
 
 
 def _fmt_price(v, width=8):
-    return f"{v:.3f}".rjust(width) if v else "N/A".rjust(width)
+    if pd.isna(v) or v is None or v == 0:
+        return "N/A".rjust(width)
+    return f"{float(v):.3f}".rjust(width)
 
 
 def _fmt_money(v):
@@ -215,7 +245,7 @@ def format_terminal_report(today, portfolio_df, total_equity, pos_result, sl_lev
             }
             label = type_labels.get(sig["type"], sig["type"])
             lines.append(f"  ⚠️ {label}: {sig['code']} ({sig['detail']})")
-        lines.append(f"  → {anomaly_result['alert_count']}个信号: "
+        lines.append(f"  → {anomaly_result['alert_count']}类信号，共{anomaly_result['signal_count']}条: "
                      f"{ACTION_LABELS.get(anomaly_result['action'], anomaly_result['action'])}")
     else:
         lines.append("  ✅ 无异常信号")
@@ -303,6 +333,7 @@ def run_risk_check(portfolio_path, total_equity):
 
     # 3. 丰富持仓数据
     portfolio_df = enrich_portfolio(portfolio_df, prices_dict)
+    validate_portfolio_prices(portfolio_df)
 
     # 4. 市场波动率
     market_vol = 0.0

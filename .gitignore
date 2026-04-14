@@ -1,7 +1,7 @@
 # Data folder
 attribution_analysis/data/
 attribution_analysis/output/
-data/cache/
+data
 risk_control/data/
 risk_control/output/
 

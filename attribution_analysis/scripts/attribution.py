@@ -47,45 +47,14 @@ def load_cash_flows(csv_path):
     return df
 
 
-def calculate_twr(portfolio_values, cash_flows_df):
-    """计算时间加权收益率 (TWR)
+def _normalize_cash_flows(cash_flows_df):
+    """按日聚合外部资金流，返回 Series[date -> amount]。"""
+    if cash_flows_df is None or cash_flows_df.empty:
+        return pd.Series(dtype=float)
 
-    在每个外部资金流日期切分子区间，链式相乘。
-
-    Args:
-        portfolio_values: DataFrame with 'date' and 'value' columns
-        cash_flows_df: DataFrame[date, amount]
-
-    Returns:
-        float: TWR
-    """
-    if portfolio_values.empty or len(portfolio_values) < 2:
-        return 0.0
-
-    dv = portfolio_values.set_index('date')['value']
-
-    # 按日汇总资金流
-    flow_map = {}
-    if not cash_flows_df.empty:
-        daily_flows = cash_flows_df.groupby('date')['amount'].sum()
-        for date, amount in daily_flows.items():
-            flow_map[date] = amount
-
-    dates = sorted(dv.index)
-    twr = 1.0
-
-    for i in range(1, len(dates)):
-        prev_value = dv.loc[dates[i - 1]]
-        curr_value = dv.loc[dates[i]]
-
-        # 如果当天有外部资金流，调整前一天的值
-        flow = flow_map.get(dates[i], 0)
-        adjusted_prev = prev_value + flow
-
-        if adjusted_prev > 0:
-            twr *= curr_value / adjusted_prev
-
-    return twr - 1.0
+    flows = cash_flows_df.copy()
+    flows['date'] = pd.to_datetime(flows['date'])
+    return flows.groupby('date')['amount'].sum().sort_index().astype(float)
 
 
 def rebuild_positions(trades_df, holdings_df=None):
@@ -207,8 +176,8 @@ def rebuild_positions(trades_df, holdings_df=None):
     return daily_snapshots
 
 
-def calculate_portfolio_value(snapshots, start_date, end_date):
-    """计算每日组合市值"""
+def calculate_portfolio_value(snapshots, start_date, end_date, extra_dates=None):
+    """计算每日组合市值，按估值日历前向持有快照。"""
     all_codes = set()
     for snap in snapshots:
         all_codes.update(snap['positions'].keys())
@@ -226,34 +195,89 @@ def calculate_portfolio_value(snapshots, start_date, end_date):
             s.index = pd.to_datetime(s.index)
             stock_prices[code] = s
 
-    daily_values = []
+    valuation_dates = set()
+    if extra_dates is not None:
+        valuation_dates.update(pd.to_datetime(extra_dates))
     for snap in snapshots:
-        date = snap['date']
-        if date < start_date or date > end_date:
+        if start_date <= snap['date'] <= end_date:
+            valuation_dates.add(pd.to_datetime(snap['date']))
+    for series in stock_prices.values():
+        valuation_dates.update(pd.to_datetime(d) for d in series.index if start_date <= d <= end_date)
+
+    valuation_dates = sorted(d for d in valuation_dates if start_date <= d <= end_date)
+
+    daily_values = []
+    sorted_snapshots = sorted(snapshots, key=lambda x: x['date'])
+    snap_idx = 0
+    current_positions = {}
+    current_cash = 0.0
+
+    for date in valuation_dates:
+        while snap_idx < len(sorted_snapshots) and sorted_snapshots[snap_idx]['date'] <= date:
+            current_positions = {
+                code: info.copy()
+                for code, info in sorted_snapshots[snap_idx]['positions'].items()
+            }
+            current_cash = float(sorted_snapshots[snap_idx]['cash'])
+            snap_idx += 1
+
+        # 首个持仓快照出现前无法可靠估值，跳过前置空窗期
+        if snap_idx == 0 and not current_positions and current_cash == 0.0:
             continue
 
         stock_value = 0.0
-        for code, pos in snap['positions'].items():
+        for code, pos in current_positions.items():
             if code in stock_prices:
                 price_series = stock_prices[code]
                 valid = price_series[price_series.index <= date]
                 if not valid.empty:
                     stock_value += valid.iloc[-1] * pos['quantity']
 
-        total = stock_value + snap['cash']
+        total = stock_value + current_cash
         daily_values.append({
             'date': date,
             'value': total,
             'stock_value': stock_value,
-            'cash': snap['cash']
+            'cash': current_cash
         })
 
     return pd.DataFrame(daily_values), stock_prices
 
 
-def calculate_returns(portfolio_values, benchmark_prices, trades_df):
-    """计算日收益率序列"""
-    pv = portfolio_values.set_index('date')['value']
+def build_performance_curves(portfolio_values, cash_flows_df=None):
+    """从交易盈亏曲线派生账户曲线与策略曲线。"""
+    if portfolio_values.empty:
+        return portfolio_values.copy()
+
+    curves = portfolio_values.copy().sort_values('date').reset_index(drop=True)
+    flow_series = _normalize_cash_flows(cash_flows_df)
+    curves['external_flow'] = curves['date'].map(flow_series).fillna(0.0)
+    curves['cumulative_flow'] = curves['external_flow'].cumsum()
+    curves['account_value'] = curves['value'] + curves['cumulative_flow']
+
+    strategy_returns = [0.0]
+    strategy_nav = [1.0]
+    for i in range(1, len(curves)):
+        prev_account = float(curves.loc[i - 1, 'account_value'])
+        curr_account = float(curves.loc[i, 'account_value'])
+        flow = float(curves.loc[i, 'external_flow'])
+        adjusted_prev = prev_account + flow
+
+        ret = 0.0
+        if adjusted_prev > 0:
+            ret = curr_account / adjusted_prev - 1
+
+        strategy_returns.append(ret)
+        strategy_nav.append(strategy_nav[-1] * (1 + ret))
+
+    curves['strategy_return'] = strategy_returns
+    curves['strategy_nav'] = strategy_nav
+    return curves
+
+
+def calculate_returns(curve_df, benchmark_prices, value_col='strategy_nav', return_col='portfolio_return'):
+    """计算组合与基准的日收益率序列。"""
+    pv = curve_df.set_index('date')[value_col]
 
     # benchmark_prices 可能是 DataFrame[date,close,...] 或 Series
     if isinstance(benchmark_prices, pd.DataFrame):
@@ -275,17 +299,17 @@ def calculate_returns(portfolio_values, benchmark_prices, trades_df):
     common = sorted(set(portfolio_returns.index) & set(benchmark_returns.index))
     df = pd.DataFrame({
         'date': common,
-        'portfolio_return': portfolio_returns.loc[common].values,
+        return_col: portfolio_returns.loc[common].values,
         'benchmark_return': benchmark_returns.loc[common].values,
     })
-    df['excess_return'] = df['portfolio_return'] - df['benchmark_return']
+    df['excess_return'] = df[return_col] - df['benchmark_return']
 
     return df
 
 
-def alpha_beta_analysis(returns_df):
-    """Alpha/Beta 回归分析"""
-    y = returns_df['portfolio_return'].values
+def alpha_beta_analysis(returns_df, return_col='portfolio_return'):
+    """Alpha/Beta 回归分析（默认基于策略收益口径）。"""
+    y = returns_df[return_col].values
     X = returns_df['benchmark_return'].values
     X_const = sm.add_constant(X)
 
@@ -295,19 +319,18 @@ def alpha_beta_analysis(returns_df):
     r_squared = model.rsquared
 
     trading_days = len(returns_df)
-    annualize_factor = 252 / trading_days if trading_days > 0 else 1
-
-    total_return = (1 + returns_df['portfolio_return']).prod() - 1
+    total_return = (1 + returns_df[return_col]).prod() - 1
     benchmark_total = (1 + returns_df['benchmark_return']).prod() - 1
     excess_return = total_return - benchmark_total
 
     alpha_annual = alpha_daily * 252
 
-    volatility = returns_df['portfolio_return'].std() * np.sqrt(252)
+    volatility = returns_df[return_col].std() * np.sqrt(252)
     daily_rf = RISK_FREE_RATE / 252
-    sharpe = (returns_df['portfolio_return'].mean() - daily_rf) / returns_df['portfolio_return'].std() * np.sqrt(252) if returns_df['portfolio_return'].std() > 0 else 0
+    ret_std = returns_df[return_col].std()
+    sharpe = (returns_df[return_col].mean() - daily_rf) / ret_std * np.sqrt(252) if ret_std > 0 else 0
 
-    cumulative = (1 + returns_df['portfolio_return']).cumprod()
+    cumulative = (1 + returns_df[return_col]).cumprod()
     rolling_max = cumulative.cummax()
     drawdown = (cumulative - rolling_max) / rolling_max
     max_drawdown = abs(drawdown.min())
@@ -327,6 +350,49 @@ def alpha_beta_analysis(returns_df):
     }
 
 
+def calculate_account_metrics(curves_df):
+    """计算账户净值口径指标（含外部资金流）。"""
+    if curves_df.empty:
+        return {
+            'net_flow': 0.0,
+            'ending_value': 0.0,
+            'pnl': 0.0,
+            'max_drawdown': 0.0,
+            'return': 0.0,
+        }
+
+    curves = curves_df.copy()
+    curves = curves[curves['account_value'].astype(float) > 0].reset_index(drop=True)
+    if curves.empty:
+        return {
+            'net_flow': 0.0,
+            'ending_value': 0.0,
+            'pnl': 0.0,
+            'max_drawdown': 0.0,
+            'return': 0.0,
+        }
+
+    account_value = curves['account_value'].astype(float)
+    cumulative = account_value.copy()
+    rolling_max = cumulative.cummax()
+    drawdown = (cumulative - rolling_max) / rolling_max.replace(0, np.nan)
+    max_drawdown = abs(drawdown.min()) if not drawdown.dropna().empty else 0.0
+
+    start_value = float(account_value.iloc[0])
+    end_value = float(account_value.iloc[-1])
+    account_return = (end_value / start_value - 1) if start_value > 0 else 0.0
+    flow_delta = float(curves['cumulative_flow'].iloc[-1] - curves['cumulative_flow'].iloc[0])
+    account_pnl = end_value - start_value - flow_delta
+
+    return {
+        'net_flow': flow_delta,
+        'ending_value': end_value,
+        'pnl': float(account_pnl),
+        'max_drawdown': float(max_drawdown),
+        'return': float(account_return),
+    }
+
+
 def print_terminal_report(results, start_date, end_date, brinson_result=None):
     """终端输出分析结果"""
     print("\n" + "=" * 50)
@@ -334,10 +400,16 @@ def print_terminal_report(results, start_date, end_date, brinson_result=None):
     print(f"分析区间：{start_date.strftime('%Y-%m-%d')} 至 {end_date.strftime('%Y-%m-%d')}")
     print("=" * 50)
 
-    print("\n【核心指标】")
-    if 'twr' in results:
-        print(f"时间加权收益率(TWR)：{results['twr']:+.2%}")
-    print(f"组合总收益率：     {results['total_return']:+.2%}")
+    print("\n【账户表现】")
+    print(f"账户期末净值：     {results['account_ending_value']:+,.2f}")
+    print(f"净流入/流出：      {results['account_net_flow']:+,.2f}")
+    print(f"账户盈亏：         {results['account_pnl']:+,.2f}")
+    print(f"账户净值收益率：    {results['account_return']:+.2%}")
+    print(f"账户最大回撤：     {results['account_max_drawdown']:.2%}")
+
+    print("\n【策略表现】")
+    print(f"时间加权收益率(TWR)：{results['twr']:+.2%}")
+    print(f"策略总收益率：     {results['total_return']:+.2%}")
     print(f"基准总收益率：     {results['benchmark_total']:+.2%}")
     print(f"超额收益率：       {results['excess_return']:+.2%}")
     print()
@@ -382,6 +454,9 @@ def print_terminal_report(results, start_date, end_date, brinson_result=None):
               f"{brinson_result['total_allocation']:>+7.2%} | "
               f"{brinson_result['total_selection']:>+7.2%} | "
               f"{brinson_result['total_interaction']:>+7.2%}")
+        if brinson_result.get("residual_effect") is not None:
+            print(f"{'残差':<10} | {'':>8} | {'':>8} | {'':>8} | {'':>8} | "
+                  f"{'':>7} | {'':>7} | {brinson_result['residual_effect']:>+7.2%}")
 
         ta = brinson_result["total_allocation"]
         ts = brinson_result["total_selection"]
@@ -391,19 +466,15 @@ def print_terminal_report(results, start_date, end_date, brinson_result=None):
         else:
             print(f"→ 超额收益主要来自个股选择（选择效应 {ts:+.2%} > 配置效应 {ta:+.2%}）")
 
-        if brinson_result.get("verification_diff") is not None:
-            diff = brinson_result["verification_diff"]
-            if diff < 0.01:
-                print(f"→ 校验通过：三效应之和与超额收益差异 {diff:.4%}")
+        if brinson_result.get("residual_effect") is not None:
+            residual = brinson_result["residual_effect"]
+            print(f"→ 现金与交易残差 {residual:+.2%}")
 
     print("=" * 50)
 
 
 def generate_md_report(returns_df, results, output_path, start_date, end_date, brinson_result=None):
     """生成 Markdown 报告"""
-    cumulative_portfolio = (1 + returns_df['portfolio_return']).cumprod()
-    cumulative_benchmark = (1 + returns_df['benchmark_return']).cumprod()
-
     returns_df = returns_df.copy()
     returns_df['month'] = returns_df['date'].dt.to_period('M')
     monthly = returns_df.groupby('month').agg({
@@ -434,13 +505,23 @@ def generate_md_report(returns_df, results, output_path, start_date, end_date, b
     lines.append(f"分析区间：{start_date.strftime('%Y-%m-%d')} 至 {end_date.strftime('%Y-%m-%d')}")
     lines.append(f"")
 
-    lines.append(f"## 核心指标")
+    lines.append(f"## 账户表现")
     lines.append(f"")
     lines.append(f"| 指标 | 数值 | 评价 |")
     lines.append(f"|------|------|------|")
-    if 'twr' in results:
-        lines.append(f"| 时间加权收益率(TWR) | {results['twr']:+.2%} | |")
-    lines.append(f"| 组合总收益率 | {results['total_return']:+.2%} | |")
+    lines.append(f"| 账户期末净值 | {results['account_ending_value']:+,.2f} | |")
+    lines.append(f"| 净流入/流出 | {results['account_net_flow']:+,.2f} | |")
+    lines.append(f"| 账户盈亏 | {results['account_pnl']:+,.2f} | |")
+    lines.append(f"| 账户净值收益率 | {results['account_return']:+.2%} | 含外部资金流 |")
+    lines.append(f"| 账户最大回撤 | {results['account_max_drawdown']:.2%} | |")
+    lines.append(f"")
+
+    lines.append(f"## 策略表现")
+    lines.append(f"")
+    lines.append(f"| 指标 | 数值 | 评价 |")
+    lines.append(f"|------|------|------|")
+    lines.append(f"| 时间加权收益率(TWR) | {results['twr']:+.2%} | 剔除外部资金流 |")
+    lines.append(f"| 策略总收益率 | {results['total_return']:+.2%} | |")
     lines.append(f"| 基准总收益率 | {results['benchmark_total']:+.2%} | |")
     lines.append(f"| 超额收益率 | {results['excess_return']:+.2%} | |")
     lines.append(f"| Alpha（年化） | {results['alpha_annual']:+.2%} | {alpha_tag} |")
@@ -461,7 +542,7 @@ def generate_md_report(returns_df, results, output_path, start_date, end_date, b
 
     lines.append(f"## 月度收益")
     lines.append(f"")
-    lines.append(f"| 月份 | 组合收益 | 基准收益 | 超额收益 |")
+    lines.append(f"| 月份 | 策略收益 | 基准收益 | 超额收益 |")
     lines.append(f"|------|----------|----------|----------|")
     for month, row in monthly.iterrows():
         lines.append(f"| {month} | {row['portfolio_return']:+.2%} | {row['benchmark_return']:+.2%} | {row['excess']:+.2%} |")
@@ -489,6 +570,10 @@ def generate_md_report(returns_df, results, output_path, start_date, end_date, b
             f"| **{brinson_result['total_selection']:+.2%}** "
             f"| **{brinson_result['total_interaction']:+.2%}** |"
         )
+        if brinson_result.get("residual_effect") is not None:
+            lines.append(
+                f"| **现金与交易残差** |  |  |  |  |  |  | **{brinson_result['residual_effect']:+.2%}** |"
+            )
         lines.append(f"")
 
         ta = brinson_result["total_allocation"]
@@ -497,6 +582,8 @@ def generate_md_report(returns_df, results, output_path, start_date, end_date, b
             lines.append(f"> 超额收益主要来自**行业配置**（配置效应 {ta:+.2%} > 选择效应 {ts:+.2%}）")
         else:
             lines.append(f"> 超额收益主要来自**个股选择**（选择效应 {ts:+.2%} > 配置效应 {ta:+.2%}）")
+        if brinson_result.get("residual_effect") is not None:
+            lines.append(f"> 现金与交易残差：{brinson_result['residual_effect']:+.2%}")
         lines.append(f"")
 
     lines.append(f"## 结论")
@@ -541,11 +628,7 @@ def main():
     print("正在重建持仓...")
     snapshots = rebuild_positions(trades, holdings_df=holdings_df)
 
-    # 3. 计算市值
-    print("正在计算组合市值...")
-    portfolio_values, stock_prices = calculate_portfolio_value(snapshots, start, end)
-
-    # 4. 获取基准数据
+    # 3. 获取基准数据
     print("正在获取基准指数数据...")
     benchmark_config = parse_benchmark_config(BENCHMARK_INDEX)
     if len(benchmark_config) == 1:
@@ -553,23 +636,47 @@ def main():
     else:
         benchmark_prices = get_composite_benchmark_prices(benchmark_config, start.strftime('%Y%m%d'), end.strftime('%Y%m%d'))
 
-    # 5. 计算收益率
+    # 4. 计算底层估值与双口径曲线
+    print("正在计算组合市值...")
+    extra_dates = []
+    if benchmark_prices is not None and not benchmark_prices.empty:
+        extra_dates.extend(pd.to_datetime(benchmark_prices['date']).tolist())
+    if cash_flows_df is not None and not cash_flows_df.empty:
+        extra_dates.extend(pd.to_datetime(cash_flows_df['date']).tolist())
+
+    portfolio_values, stock_prices = calculate_portfolio_value(
+        snapshots, start, end, extra_dates=extra_dates,
+    )
+    curves_df = build_performance_curves(portfolio_values, cash_flows_df)
+
+    # 5. 计算策略收益率
     print("正在计算收益率...")
-    returns_df = calculate_returns(portfolio_values, benchmark_prices, trades)
+    returns_df = calculate_returns(curves_df, benchmark_prices, value_col='strategy_nav')
 
     # 6. Alpha/Beta 分析
     print("正在进行 Alpha/Beta 分析...")
     results = alpha_beta_analysis(returns_df)
-
-    # 7. TWR 计算（如果提供了 cash_flows）
-    if cash_flows_df is not None:
-        twr = calculate_twr(portfolio_values, cash_flows_df)
-        results['twr'] = twr
-        print(f"\n时间加权收益率 (TWR): {twr:+.2%}")
+    results['twr'] = results['total_return']
+    results.update({
+        'account_net_flow': 0.0,
+        'account_ending_value': 0.0,
+        'account_pnl': 0.0,
+        'account_max_drawdown': 0.0,
+        'account_return': 0.0,
+    })
+    results.update({
+        f"account_{k}": v
+        for k, v in calculate_account_metrics(curves_df).items()
+    })
+    print(f"\n时间加权收益率 (TWR): {results['twr']:+.2%}")
 
     # 8. Brinson 归因分析
     print("正在进行 Brinson 归因分析...")
-    brinson_result = brinson_analysis(snapshots, portfolio_values, benchmark_prices, start, end, stock_prices, benchmark_config=benchmark_config)
+    strategy_curve = curves_df[['date', 'strategy_nav']].rename(columns={'strategy_nav': 'value'})
+    brinson_result = brinson_analysis(
+        snapshots, strategy_curve, benchmark_prices, start, end,
+        stock_prices, benchmark_config=benchmark_config,
+    )
 
     # 9. 输出报告
     print_terminal_report(results, start, end, brinson_result)

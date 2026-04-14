@@ -1,5 +1,10 @@
 # 策略归因分析框架
 
+用于复盘一段时间内的实盘交易，回答两个问题：
+
+- 账户这段时间真实赚了多少钱，净值曲线体验如何
+- 剔除外部资金流后，交易决策本身是否跑赢了基准
+
 ## 快速开始
 
 ### 1. 安装依赖
@@ -11,46 +16,70 @@ pip install -r requirements.txt
 
 ### 2. 准备数据
 
-从券商导出 PDF 交割单，放到 `data/raw/` 目录。
-券商支持：东方证券
+从券商导出 PDF 对账单，放到 `data/raw/` 目录。当前支持：东方证券。
 
 ### 3. 转换数据
 
 ```bash
 python scripts/convert_broker_data.py \
     --input data/raw/交割单.pdf \
-    --output data/trades.csv
+    --output-dir data
 ```
+
+转换后会得到：
+
+- `data/trades.csv`
+- `data/holdings.csv`
+- `data/cash_flows.csv`
 
 ### 4. 运行分析
 
 ```bash
 python scripts/attribution.py \
     --trades data/trades.csv \
+    --holdings data/holdings.csv \
+    --cash-flows data/cash_flows.csv \
     --start-date 2025-01-01 \
     --end-date 2026-03-31 \
-    --output output/report.html
+    --output output/report.md
 ```
 
 ### 5. 查看报告
 
-```bash
-open output/report.html
-```
+直接打开 `output/report.md`。
+
+## 双口径说明
+
+模块同时输出两套结果：
+
+- 账户净值口径：包含银证转账、担保品划转等外部资金流。用于观察真实账户净值、账户盈亏和账户回撤。
+- 策略收益口径：剔除外部资金流后的时间加权收益率（TWR）。用于计算 Alpha / Beta / Sharpe / 最大回撤 / 超额收益。
+
+建议：
+
+- 判断自己是否适合做量化，优先看策略收益口径
+- 判断账户这段时间实际体验，参考账户净值口径
 
 ## 数据格式
 
-标准 CSV 格式：
+标准 `trades.csv` 示例：
+
 ```csv
 date,market,code,name,direction,quantity,price,amount,brokerage_fee,stamp_duty,transfer_fee,other_fee,net_amount,remark
 20260103,沪深市场,600519,贵州茅台,买入,100,1680.00,168000.00,50.40,0,16.80,0,-168067.20,
 ```
 
+更多格式约定见 [docs/csv-format.md](docs/csv-format.md)。
+
 ## 配置
 
-编辑 `config.py` 修改基准指数、无风险利率等参数。
+编辑 `config.py` 可调整：
 
-## 示例输出
+- 基准指数或复合基准配置
+- 无风险利率
+- 报告输出目录
+
+## 输出内容
 
 ### 终端输出
 
@@ -60,8 +89,16 @@ date,market,code,name,direction,quantity,price,amount,brokerage_fee,stamp_duty,t
 分析区间：2025-01-01 至 2026-03-31
 ==================================================
 
-【核心指标】
-组合总收益率：     +2.5%
+【账户表现】
+账户期末净值：     +1,025,000.00
+净流入/流出：      +120,000.00
+账户盈亏：         +25,000.00
+账户净值收益率：    +14.8%
+账户最大回撤：     9.2%
+
+【策略表现】
+时间加权收益率(TWR)：+2.5%
+策略总收益率：     +2.5%
 基准总收益率：     -8.0%
 超额收益率：       +10.5%
 
@@ -70,92 +107,81 @@ Beta：             0.95   ✓ 市场敏感度正常
 R²：               0.78   ✓ 模型拟合良好
 
 夏普比率：         1.35
-最大回撤：         -12.3%
+最大回撤：         12.3%
 年化波动率：       18.5%
-
-【收益归因】
-市场贡献（Beta）： -7.6%
-策略贡献（Alpha）： +10.1%
-
-【结论】
-策略表现优异，Alpha 显著为正。
-在下跌市场中仍获得正收益，风控有效。
-
-【Brinson 归因】
-行业        | 组合权重 | 基准权重 | 组合收益 | 基准收益 | 配置效应 | 选择效应 | 交互效应
----------------------------------------------------------------------------
-非银金融    |  45.2%  |   8.3%  |  +2.1%  |  +1.5%  | +0.22%  | -0.05%  | +0.04%
-医药生物    |  20.1%  |  10.5%  |  +5.3%  |  +3.2%  | +0.08%  | +0.22%  | +0.02%
-食品饮料    |  15.0%  |   7.8%  |  -1.2%  |  -2.0%  | +0.01%  | +0.06%  | +0.01%
-...
----------------------------------------------------------------------------
-合计        | 100.0%  | 100.0%  |         |         | +0.35%  | +0.12%  | +0.08%
-
-→ 超额收益主要来自行业配置（配置效应 +0.35% > 选择效应 +0.12%）
-→ 校验通过：三效应之和与超额收益差异 0.0012%
-==================================================
 ```
 
 ### Markdown 报告
 
 包含：
-- 核心指标与 Alpha/Beta 归因
-- Brinson 归因表格（BHB 模型，按行业拆解配置/选择/交互效应）
-- 净值序列与月度超额收益
+
+- 账户净值口径指标
+- 策略收益口径指标
+- Brinson 归因表格（BHB 模型）
+- 月度策略收益与超额收益
 - 综合结论
 
 ## 常见问题
 
+### Q: 为什么净值收益率和 TWR 不一样？
+
+A: 两者回答的问题不同。
+
+- 净值收益率包含外部资金流，反映真实账户体验
+- TWR 剔除外部资金流，反映交易决策本身的收益质量
+
 ### Q: PDF 解析失败怎么办？
 
-A: 检查 PDF 是否包含可提取的表格（不是扫描件）。如果是扫描件，需要使用截图识别模式。
+A: 检查 PDF 是否包含可提取表格。如果是扫描件，需要先做 OCR。
 
-### Q: 某只股票获取行情失败？
+### Q: 某只股票获取行情失败怎么办？
 
-A: 可能是股票代码格式问题或已退市。检查 `data/cache/` 目录下的缓存文件，手动补充数据。
+A: 可能是代码格式问题、停牌或退市。检查 `../data/cache/`，必要时补充本地价格数据。
 
-### Q: Alpha 为负是什么原因？
+### Q: Alpha 为负说明什么？
 
-A: 说明策略跑输市场。可能原因：
-1. 选股能力不足
+A: 说明策略收益口径下跑输基准。常见原因：
+
+1. 选股没有持续优势
 2. 交易成本过高
-3. 择时不当
-
-建议和师傅讨论策略调整方向。
+3. 市场暴露和持仓节奏不合理
 
 ## 技术栈
 
 - Python 3.14
-- baostock - A股行情（不复权）
-- futu-api - 港股行情首选（FutuOpenD）
-- yfinance - 港股行情备选（Yahoo Finance）
-- pandas - 数据处理
-- statsmodels - 统计分析
-- pyecharts - 可视化
-- pdfplumber - PDF解析
+- baostock
+- futu-api
+- pandas
+- statsmodels
+- pdfplumber
 
 ## 项目结构
 
-```
+```text
 attribution_analysis/
-├── config.py              # 归因专属配置（基准/报告/列映射）
-├── requirements.txt       # 依赖列表
-├── quickstart.sh          # 一键运行脚本
-├── README.md              # 本文档
+├── config.py
+├── requirements.txt
+├── quickstart.sh
+├── README.md
 ├── data/
-│   ├── raw/               # 原始PDF文件
-│   ├── trades.csv         # 标准格式交割单
-│   ├── holdings.csv       # 持仓快照
-│   └── cash_flows.csv     # 外部资金流
+│   ├── raw/
+│   ├── trades.csv
+│   ├── holdings.csv
+│   └── cash_flows.csv
+├── docs/
+│   ├── architecture.md
+│   └── csv-format.md
 ├── scripts/
-│   ├── convert_broker_data.py  # PDF转换脚本
-│   ├── attribution.py          # 核心分析脚本
-│   ├── brinson.py              # Brinson 归因模块（BHB 模型）
-│   └── pdf_portfolio.py        # PDF 持仓提取
-└── output/                # 生成的报告
+│   ├── attribution.py
+│   ├── brinson.py
+│   ├── convert_broker_data.py
+│   └── pdf_portfolio.py
+├── tests/
+│   └── test_attribution.py
+└── output/
 ```
 
-> 行情数据获取已迁移到 `../shared/data_provider.py`，缓存在 `../data/cache/`，两模块共用。
+> 行情数据获取在 `../shared/data_provider.py`，缓存目录为 `../data/cache/`。
 
 ## 许可证
 

@@ -54,13 +54,14 @@ cp attribution_analysis/.env .env   # 编辑填入 TS_TOKEN / FUTU_HOST / FUTU_P
 
 ### ✅ 模块1：策略归因分析 — 搞清楚钱从哪来
 
-分析实盘交易的收益来源，区分 Alpha 和 Beta。
+分析实盘交易的收益来源，同时区分账户净值表现和策略本身表现。
 
 - PDF 交割单自动解析（东方证券）
-- 持仓重建 & 每日市值计算
-- Alpha/Beta 回归分析（CAPM）
+- 持仓重建 & 全估值日历的每日市值计算
+- 双口径报告：账户净值 / 策略收益（TWR）
+- Alpha/Beta 回归分析（基于策略收益口径）
 - Brinson 行业归因（BHB 模型）
-- 多数据源行情：A股 baostock / 港股 FutuOpenD → Yahoo → 东方财富
+- 多数据源行情：A股 baostock / 港股 FutuOpenD → 东方财富
 
 ```bash
 cd attribution_analysis
@@ -158,10 +159,13 @@ PythonProjects/
 │   │   └── pdf_portfolio.py        # PDF 持仓提取
 │   ├── config.py                   # 归因专属配置（基准/报告）
 │   ├── quickstart.sh
+│   ├── tests/
+│   │   └── test_attribution.py     # 归因回归测试
 │   ├── data/
 │   │   ├── raw/                    # 原始 PDF 对账单
 │   │   ├── trades.csv              # 交割单
 │   │   ├── holdings.csv            # 持仓快照
+│   │   ├── cash_flows.csv          # 外部资金流
 │   │   └── asset_summary.json      # 账户资产（总权益/市值/现金）
 │   └── output/                     # 归因报告
 ├── risk_control/                   # 模块2：风控系统 ✅

@@ -204,6 +204,18 @@ def _get_composite_benchmark_sector_data(benchmark_config, start_date, end_date)
 
     merged = {}
 
+    def _merge_sector_return(sector_name, added_weight, added_return):
+        if sector_name in merged:
+            prev_weight = merged[sector_name]["weight"]
+            new_weight = prev_weight + added_weight
+            if new_weight > 0:
+                merged[sector_name]["return"] = (
+                    merged[sector_name]["return"] * prev_weight + added_return * added_weight
+                ) / new_weight
+            merged[sector_name]["weight"] = new_weight
+        else:
+            merged[sector_name] = {"weight": added_weight, "return": added_return}
+
     for comp in benchmark_config:
         idx = comp["index"]
         weight = comp["weight"]
@@ -219,24 +231,12 @@ def _get_composite_benchmark_sector_data(benchmark_config, start_date, end_date)
                 hk_return = 0.0
                 print(f"  警告: 无法获取 {idx} 数据，境外收益设为 0")
 
-            sector_name = "境外"
-            if sector_name in merged:
-                merged[sector_name]["weight"] += weight
-                # 加权平均收益（多个境外成分时）
-            else:
-                merged[sector_name] = {"weight": weight, "return": hk_return}
+            _merge_sector_return("境外", weight, hk_return)
         else:
             # A股指数：获取申万行业数据，按权重缩放
             a_sectors = get_benchmark_sector_data(idx, start_date, end_date)
             for sector, data in a_sectors.items():
-                if sector in merged:
-                    merged[sector]["weight"] += data["weight"] * weight
-                    # 同名行业收益取加权平均（简化处理：A股部分收益相同）
-                else:
-                    merged[sector] = {
-                        "weight": data["weight"] * weight,
-                        "return": data["return"],
-                    }
+                _merge_sector_return(sector, data["weight"] * weight, data["return"])
 
     # 归一化权重
     total_w = sum(v["weight"] for v in merged.values())
@@ -410,13 +410,15 @@ def brinson_analysis(snapshots, portfolio_values, benchmark_prices, start_date, 
 
         excess = total_port_return - total_bench_return
         brinson_total = result["total_active"]
-        diff = abs(excess - brinson_total)
+        residual = excess - brinson_total
+        diff = abs(residual)
 
         result["excess_return"] = excess
+        result["residual_effect"] = residual
         result["verification_diff"] = diff
 
-        if diff > 0.05:
-            print(f"  注意: Brinson 归因合计 ({brinson_total:+.2%}) 与超额收益 ({excess:+.2%}) 差异较大 ({diff:.2%})")
-            print(f"  （差异可能来自：现金持仓、期间交易、行业数据精度等）")
+        if diff > 0.01:
+            print(f"  注意: 股票行业归因 ({brinson_total:+.2%}) 与组合超额收益 ({excess:+.2%}) 存在残差 {residual:+.2%}")
+            print("  （残差通常来自：现金仓位、期间交易、申购赎回和行业映射近似）")
 
     return result

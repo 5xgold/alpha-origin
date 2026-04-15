@@ -86,7 +86,7 @@ CIRCUIT_BREAKER = {"daily": 0.03, "weekly": 0.05, "monthly": 0.08}
 ═══════════════════════════════════════════════════════
 ```
 
-报告同时保存为 `output/risk_report_YYYYMMDD.md`。
+报告同时保存为 `../output/risk_report_YYYYMMDD.md`。
 
 ## 日内扩展（Phase 2）
 

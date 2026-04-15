@@ -13,7 +13,7 @@ import pandas as pd
 import numpy as np
 
 sys.path.append(str(Path(__file__).parent.parent))
-from config import MONETARY_FUND_CODE, EXTERNAL_FLOW_TYPES
+from attribution_analysis.config import MONETARY_FUND_CODE, EXTERNAL_FLOW_TYPES
 from shared.data_provider import get_stock_prices, _is_hk
 
 

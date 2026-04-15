@@ -148,26 +148,26 @@ PythonProjects/
 ├── quickstart.sh                   # 一键运行：PDF → 归因 → 风控
 ├── shared/                         # 公共模块
 │   ├── config.py                   # 公共配置（数据源/缓存/外部服务）
-│   └── data_provider.py            # 多数据源行情（baostock/futu/yfinance/eastmoney）
+│   ├── data_provider.py            # 多数据源行情（baostock/futu/yfinance/eastmoney）
+│   ├── convert_broker_data.py      # PDF 交割单 → 标准 CSV
+│   └── pdf_portfolio.py            # PDF 持仓提取 + TWR 计算
 ├── data/
 │   └── cache/                      # 行情数据缓存（两模块共用）
+├── output/                         # 统一报告输出（归因 + 风控）
 ├── attribution_analysis/           # 模块1：策略归因分析 ✅
 │   ├── scripts/
 │   │   ├── attribution.py          # 核心归因分析（Alpha/Beta + 报告生成）
-│   │   ├── brinson.py              # Brinson 行业归因（BHB 模型）
-│   │   ├── convert_broker_data.py  # PDF 交割单 → 标准 CSV
-│   │   └── pdf_portfolio.py        # PDF 持仓提取
+│   │   └── brinson.py              # Brinson 行业归因（BHB 模型）
 │   ├── config.py                   # 归因专属配置（基准/报告）
 │   ├── quickstart.sh
 │   ├── tests/
 │   │   └── test_attribution.py     # 归因回归测试
-│   ├── data/
-│   │   ├── raw/                    # 原始 PDF 对账单
-│   │   ├── trades.csv              # 交割单
-│   │   ├── holdings.csv            # 持仓快照
-│   │   ├── cash_flows.csv          # 外部资金流
-│   │   └── asset_summary.json      # 账户资产（总权益/市值/现金）
-│   └── output/                     # 归因报告
+│   └── data/
+│       ├── raw/                    # 原始 PDF 对账单
+│       ├── trades.csv              # 交割单
+│       ├── holdings.csv            # 持仓快照
+│       ├── cash_flows.csv          # 外部资金流
+│       └── asset_summary.json      # 账户资产（总权益/市值/现金）
 ├── risk_control/                   # 模块2：风控系统 ✅
 │   ├── scripts/
 │   │   ├── risk_report.py          # 主入口：风控检查报告
@@ -177,9 +177,8 @@ PythonProjects/
 │   │   └── anomaly_detect.py       # 第三道防线：异常检测
 │   ├── config.py                   # 风控专属参数
 │   ├── quickstart.sh
-│   ├── data/
-│   │   └── portfolio.csv           # 当前持仓
-│   └── output/                     # 风控报告
+│   └── data/
+│       └── portfolio.csv           # 当前持仓
 └── docs/
     ├── quant-transformation-plan.md
     ├── macro-indicators-guide.md

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-04-15
+
+### refactor(project)
+
+- move `convert_broker_data.py` and `pdf_portfolio.py` from `attribution_analysis/scripts/` to `shared/` for cross-module reuse
+- unify report output under root `output/` and update `.gitignore` to ignore the shared output directory
+- update attribution and risk-control quickstart scripts to call shared PDF parsers and write reports to the unified output path
+- adjust attribution config and risk report persistence paths to use the repository-level output directory
+- refresh top-level and module READMEs to reflect the new shared script layout and output locations
+
 ## 2026-04-14
 
 ### fix(risk-control)

@@ -363,7 +363,7 @@ def run_risk_check(portfolio_path, total_equity):
     print(report_text)
 
     # 9. 保存 Markdown
-    output_dir = Path(__file__).parent.parent / "output"
+    output_dir = Path(__file__).parent.parent.parent / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
     md_path = output_dir / f"risk_report_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
     md_path.write_text(format_md_report(today, report_text), encoding="utf-8")

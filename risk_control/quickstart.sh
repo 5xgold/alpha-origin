@@ -60,7 +60,7 @@ if [ ! -f "$ROOT_DIR/.env" ]; then
 fi
 
 # ── 检查持仓文件 ──
-mkdir -p data output
+mkdir -p data ../output
 
 if [ ! -f "$PORTFOLIO" ]; then
     # 尝试从归因模块复制
@@ -86,5 +86,5 @@ python3 risk_control/scripts/risk_report.py \
 
 echo ""
 echo "=========================================="
-echo "  完成！报告已保存到 risk_control/output/"
+echo "  完成！报告已保存到 output/"
 echo "=========================================="

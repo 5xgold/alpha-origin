@@ -9,7 +9,7 @@ import pdfplumber
 import pandas as pd
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
-from config import (
+from attribution_analysis.config import (
     STANDARD_COLUMNS, CACHE_DIR,
     EXTERNAL_FLOW_TYPES, COLLATERAL_FLOW_TYPES, MONETARY_FUND_CODE,
 )

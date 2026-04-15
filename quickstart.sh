@@ -62,7 +62,7 @@ do_parse() {
     [ ! -f "$pdf" ] && error "PDF 文件不存在: $pdf"
 
     step "PDF 解析"
-    python3 "$AA_DIR/scripts/convert_broker_data.py" \
+    python3 "$ROOT_DIR/shared/convert_broker_data.py" \
         --input "$pdf" \
         --output-dir "$AA_DIR/data"
 
@@ -89,10 +89,10 @@ do_attr() {
         $args \
         --start-date "$start" \
         --end-date "$end" \
-        --output output/report.md
+        --output $ROOT_DIR/output/report.md
     cd "$ROOT_DIR"
 
-    info "归因报告: attribution_analysis/output/report.md"
+    info "归因报告: output/report.md"
 }
 
 # ── 风控检查 ──
@@ -117,7 +117,7 @@ do_risk() {
         --portfolio "$RC_DIR/data/portfolio.csv" \
         --equity "$equity"
 
-    info "风控报告: risk_control/output/"
+    info "风控报告: output/"
 }
 
 # ── 主流程 ──

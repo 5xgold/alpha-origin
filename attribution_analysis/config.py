@@ -25,7 +25,7 @@ MIN_TRADING_DAYS = 5        # 最少交易日数
 
 # 报告配置
 REPORT_TITLE = "策略归因分析报告"
-OUTPUT_DIR = "output"
+OUTPUT_DIR = str(Path(__file__).parent.parent / "output")
 
 # 货币基金配置
 MONETARY_FUND_CODE = "007864"       # 东方红货币C

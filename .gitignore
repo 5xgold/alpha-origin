@@ -1,9 +1,8 @@
 # Data folder
 attribution_analysis/data/
-attribution_analysis/output/
 data
 risk_control/data/
-risk_control/output/
+output/
 
 # Env
 .env

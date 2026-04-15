@@ -21,7 +21,7 @@ pip install -r requirements.txt
 ### 3. 转换数据
 
 ```bash
-python scripts/convert_broker_data.py \
+python ../shared/convert_broker_data.py \
     --input data/raw/交割单.pdf \
     --output-dir data
 ```
@@ -41,12 +41,12 @@ python scripts/attribution.py \
     --cash-flows data/cash_flows.csv \
     --start-date 2025-01-01 \
     --end-date 2026-03-31 \
-    --output output/report.md
+    --output ../output/report.md
 ```
 
 ### 5. 查看报告
 
-直接打开 `output/report.md`。
+直接打开 `../output/report.md`。
 
 ## 双口径说明
 
@@ -173,15 +173,14 @@ attribution_analysis/
 │   └── csv-format.md
 ├── scripts/
 │   ├── attribution.py
-│   ├── brinson.py
-│   ├── convert_broker_data.py
-│   └── pdf_portfolio.py
-├── tests/
-│   └── test_attribution.py
-└── output/
+│   └── brinson.py
+└── tests/
+    └── test_attribution.py
 ```
 
+> PDF 解析脚本在 `../shared/convert_broker_data.py` 和 `../shared/pdf_portfolio.py`。
 > 行情数据获取在 `../shared/data_provider.py`，缓存目录为 `../data/cache/`。
+> 报告输出到 `../output/`。
 
 ## 许可证
 

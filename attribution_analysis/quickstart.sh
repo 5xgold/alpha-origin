@@ -51,6 +51,7 @@ mkdir -p data/raw data/cache ../output
 
 # ── 虚拟环境 ──
 VENV_DIR=".venv"
+DEPS_MARKER="$VENV_DIR/.deps_installed"
 if [ ! -d "$VENV_DIR" ]; then
     warn "创建虚拟环境..."
     python3 -m venv "$VENV_DIR"
@@ -60,10 +61,14 @@ source "$VENV_DIR/bin/activate"
 info "已激活虚拟环境"
 
 # ── 安装依赖 ──
-if [ ! -f "$VENV_DIR/.deps_installed" ]; then
+CURRENT_DEPS_HASH="$(shasum -a 256 requirements.txt | awk '{print $1}')"
+INSTALLED_DEPS_HASH=""
+[ -f "$DEPS_MARKER" ] && INSTALLED_DEPS_HASH="$(cat "$DEPS_MARKER")"
+
+if [ "$CURRENT_DEPS_HASH" != "$INSTALLED_DEPS_HASH" ]; then
     warn "安装依赖..."
     pip install -r requirements.txt -q -i https://pypi.tuna.tsinghua.edu.cn/simple
-    touch "$VENV_DIR/.deps_installed"
+    printf '%s\n' "$CURRENT_DEPS_HASH" > "$DEPS_MARKER"
     info "依赖安装完成"
 else
     info "依赖已安装"

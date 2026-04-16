@@ -2,6 +2,7 @@
 attribution_analysis/data/
 data
 risk_control/data/
+llm_digest/data/
 output/
 
 # Env

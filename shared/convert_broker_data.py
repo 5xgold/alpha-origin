@@ -94,6 +94,7 @@ def normalize_columns(headers, rows):
             df[col] = ""
 
     df["direction"] = df.apply(infer_direction, axis=1)
+    df["quantity"] = df.apply(normalize_quantity, axis=1)
     df["net_amount"] = df.apply(calculate_net_amount, axis=1)
 
     # 过滤掉非股票交易
@@ -102,6 +103,18 @@ def normalize_columns(headers, rows):
     df = df[df['direction'].isin(['买入', '卖出', '分红', '扣税'])]
 
     return df[STANDARD_COLUMNS]
+
+
+def normalize_quantity(row):
+    """根据交易方向统一数量符号，避免卖出数量在不同券商行中正负号混杂。"""
+    quantity = float(row.get("quantity", 0) or 0)
+    direction = row.get("direction")
+
+    if direction == "买入":
+        return abs(quantity)
+    if direction == "卖出":
+        return -abs(quantity)
+    return quantity
 
 
 def infer_direction(row):

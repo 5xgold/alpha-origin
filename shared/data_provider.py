@@ -714,6 +714,37 @@ def get_sw_sector_returns(start_date, end_date):
 
 
 # ============================================================
+# 公开 API：东方财富快讯
+# ============================================================
+
+def get_eastmoney_news(limit=20):
+    """获取东方财富财经快讯
+
+    返回 [str, ...]（纯文本标题列表）
+    """
+    import re
+    try:
+        url = (
+            f"https://newsapi.eastmoney.com/kuaixun/v1/"
+            f"getlist_102_ajaxResult_{limit}_1_.html"
+        )
+        headers = {"Referer": "https://kuaixun.eastmoney.com/"}
+        resp = requests.get(url, headers=headers, timeout=10)
+        text = resp.text
+        # 响应格式: var ajaxResult={...}
+        json_match = re.search(r'var ajaxResult=(\{.*\})', text)
+        if not json_match:
+            return []
+        import json
+        data = json.loads(json_match.group(1))
+        items = data.get("LivesList", [])
+        return [item["title"] for item in items[:limit] if item.get("title")]
+    except Exception as e:
+        print(f"  获取东方财富快讯失败: {e}")
+        return []
+
+
+# ============================================================
 # 公开 API：指数成分股
 # ============================================================
 

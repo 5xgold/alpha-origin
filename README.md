@@ -23,6 +23,9 @@ cp attribution_analysis/.env .env   # 编辑填入 TS_TOKEN / FUTU_HOST / FUTU_P
 ./quickstart.sh attr 2026-01-01 2026-03-31          # 仅归因分析
 ./quickstart.sh risk                                 # 仅风控（总权益自动从 PDF 读取）
 ./quickstart.sh risk 500000                          # 手动指定总权益
+./quickstart.sh brief                                # 每日简报
+./quickstart.sh review 601216                        # 交易复盘（指定股票）
+./quickstart.sh earnings <PDF> 601216                # 财报摘要
 ```
 
 ## 系统架构
@@ -101,17 +104,24 @@ cd risk_control
 
 详见 [risk_control/README.md](risk_control/README.md)
 
-### 🔲 模块3：LLM 信息压缩 — 从刷1小时到读2分钟
+### ✅ 模块3：LLM 信息压缩 — 从刷1小时到读2分钟
 
 不是用 LLM 预测市场，而是压缩处理信息的时间。
 
 | 场景 | 触发 | 效果 |
 |------|------|------|
+| 交易复盘 | 平仓后 / 手动运行 | 凭记忆复盘 → 数据驱动结构化复盘 |
+| 每日简报 | 每天收盘后 | 刷1小时新闻 → 读2分钟简报 |
 | 财报摘要 | 持仓公司发布财报 | 每份读30分钟 → 扫30秒 |
-| 每日简报 | 每天 8:30 开盘前 | 刷1小时新闻 → 读2分钟简报 |
-| 交易复盘 | 每笔交易平仓后 | 凭记忆复盘 → 数据驱动结构化复盘 |
 
-技术栈：Go 爬虫/RSS 聚合 + DeepSeek API + 企业微信/Telegram 推送
+```bash
+./quickstart.sh review 601216              # 交易复盘（指定股票）
+./quickstart.sh review                     # 复盘所有已平仓
+./quickstart.sh brief                      # 每日简报
+./quickstart.sh earnings <PDF> 601216      # 财报摘要
+```
+
+技术栈：DeepSeek / OpenAI 兼容 API + Jinja2 模板 + 本地数据管道
 
 ### ~~模块4：环境分类模型~~ — 暂不开发
 
@@ -125,7 +135,7 @@ cd risk_control
 |------|------|---------|------|
 | 1-2月 | 策略归因分析 | Alpha/Beta 分离结果与师傅验证一致 | ✅ 已完成 |
 | 2-4月 | 风控系统 | 回测最大回撤减少 30%+ | ✅ Phase 1 完成 |
-| 3-5月 | LLM 信息压缩 | 每天 8:30 收到简报 | 🔲 |
+| 3-5月 | LLM 信息压缩 | 每天 8:30 收到简报 | ✅ |
 | 5-7月 | ~~环境分类模型~~ | ~~过去 5 年状态分类准确率 >70%~~ | 💤 搁置 |
 | 7-9月 | 系统整合 | 信号→增强→风控→执行→复盘全流程 | 🔲 |
 | 9-12月 | 实盘验证 | 夏普比率↑ 最大回撤↓ | 🔲 |
@@ -145,7 +155,7 @@ PythonProjects/
 ├── .env                            # 数据源配置（TS_TOKEN/FUTU_HOST/FUTU_PORT）
 ├── .venv/                          # 共享虚拟环境
 ├── requirements.txt                # 全局依赖
-├── quickstart.sh                   # 一键运行：PDF → 归因 → 风控
+├── quickstart.sh                   # 一键运行：PDF → 归因 → 风控 → LLM 简报
 ├── shared/                         # 公共模块
 │   ├── config.py                   # 公共配置（数据源/缓存/外部服务）
 │   ├── data_provider.py            # 多数据源行情（baostock/futu/yfinance/eastmoney）
@@ -179,6 +189,15 @@ PythonProjects/
 │   ├── quickstart.sh
 │   └── data/
 │       └── portfolio.csv           # 当前持仓
+├── llm_digest/                     # 模块3：LLM 信息压缩 ✅
+│   ├── config.py                   # LLM 配置 + prompt 参数
+│   ├── llm_client.py               # OpenAI 兼容 API 封装
+│   ├── scripts/
+│   │   ├── trade_review.py         # 交易复盘
+│   │   ├── daily_brief.py          # 每日简报
+│   │   └── earnings_summary.py     # 财报摘要
+│   ├── prompts/                    # Jinja2 Prompt 模板
+│   └── data/earnings/              # 财报 PDF 存放目录
 └── docs/
     ├── quant-transformation-plan.md
     ├── macro-indicators-guide.md
@@ -190,6 +209,7 @@ PythonProjects/
 - Python 3.14 / pandas / statsmodels
 - 行情数据：baostock（A股）/ futu-api（港股）
 - PDF 解析：pdfplumber
+- LLM：DeepSeek / OpenAI 兼容 API + Jinja2 模板
 - 可视化：pyecharts
 
 完整转型计划详见 [docs/quant-transformation-plan.md](docs/quant-transformation-plan.md)

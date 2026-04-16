@@ -34,12 +34,16 @@ usage() {
     echo "  ./quickstart.sh parse <PDF>"
     echo "  ./quickstart.sh attr [开始日期] [结束日期]"
     echo "  ./quickstart.sh risk [总权益]"
+    echo "  ./quickstart.sh brief [日期]              # 每日简报"
+    echo "  ./quickstart.sh review [股票代码]          # 交易复盘"
+    echo "  ./quickstart.sh earnings <PDF> <股票代码>  # 财报摘要"
     exit 1
 }
 
 # ── 环境准备 ──
 setup_env() {
     VENV_DIR="$ROOT_DIR/.venv"
+    DEPS_MARKER="$VENV_DIR/.deps_installed"
     if [ ! -d "$VENV_DIR" ]; then
         warn "创建虚拟环境..."
         python3 -m venv "$VENV_DIR"
@@ -47,10 +51,14 @@ setup_env() {
     source "$VENV_DIR/bin/activate"
     info "Python: $(python3 --version)"
 
-    if [ ! -f "$VENV_DIR/.deps_installed" ]; then
+    current_deps_hash="$(shasum -a 256 requirements.txt | awk '{print $1}')"
+    installed_deps_hash=""
+    [ -f "$DEPS_MARKER" ] && installed_deps_hash="$(cat "$DEPS_MARKER")"
+
+    if [ "$current_deps_hash" != "$installed_deps_hash" ]; then
         warn "安装依赖..."
         pip install -r requirements.txt -q -i https://pypi.tuna.tsinghua.edu.cn/simple
-        touch "$VENV_DIR/.deps_installed"
+        printf '%s\n' "$current_deps_hash" > "$DEPS_MARKER"
         info "依赖安装完成"
     fi
 }
@@ -120,6 +128,37 @@ do_risk() {
     info "风控报告: output/"
 }
 
+# ── 每日简报 ──
+do_brief() {
+    local date_arg="$1"
+    step "每日简报"
+    local args=""
+    [ -n "$date_arg" ] && args="--date $date_arg"
+    python3 "$ROOT_DIR/llm_digest/scripts/daily_brief.py" $args
+}
+
+# ── 交易复盘 ──
+do_review() {
+    local code="$1"
+    step "交易复盘"
+    local args=""
+    [ -n "$code" ] && args="--code $code"
+    python3 "$ROOT_DIR/llm_digest/scripts/trade_review.py" $args
+}
+
+# ── 财报摘要 ──
+do_earnings() {
+    local pdf="$1"
+    local code="$2"
+    [ -z "$pdf" ] && error "请指定财报 PDF 路径"
+    [ -z "$code" ] && error "请指定股票代码"
+    [ ! -f "$pdf" ] && error "PDF 文件不存在: $pdf"
+
+    step "财报摘要"
+    python3 "$ROOT_DIR/llm_digest/scripts/earnings_summary.py" \
+        --input "$pdf" --code "$code"
+}
+
 # ── 主流程 ──
 CMD="${1:-all}"
 shift 2>/dev/null || true
@@ -139,6 +178,15 @@ case "$CMD" in
         ;;
     risk)
         do_risk "$1"
+        ;;
+    brief)
+        do_brief "$1"
+        ;;
+    review)
+        do_review "$1"
+        ;;
+    earnings)
+        do_earnings "$1" "$2"
         ;;
     all)
         do_parse "$1"

@@ -1,0 +1,5 @@
+# Change Log
+
+## 2026-04-17
+- 新增 Phase 2 路线图文档（docs/roadmap-phase2.md）：自动化 + 实时化规划，涵盖券商 API、自动调度、信息日报、事件提醒四大方向
+- 更新 README.md：路线图章节增加 Phase 2 规划摘要及链接，项目结构补充 roadmap-phase2.md

@@ -1,0 +1,8 @@
+numpy>=1.24
+pandas>=1.5
+scikit-learn>=1.3
+# 可选但推荐
+# faiss-cpu>=1.7        # 大样本库快速检索（pip install faiss-cpu）
+# dtaidistance>=2.3     # 更快的 DTW（pip install dtaidistance）
+# tushare>=1.2          # Tushare 数据源（需要 Token）
+# akshare>=1.12         # akshare 免费数据源

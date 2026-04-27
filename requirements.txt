@@ -41,6 +41,7 @@ python-dotenv==1.2.2
 pytz==2026.1.post1
 requests==2.33.1
 rich==14.3.3
+scikit-learn>=1.3.0
 scipy==1.17.1
 simplejson==3.20.2
 six==1.17.0
@@ -55,3 +56,8 @@ webencodings==0.5.1
 websockets==16.0
 openai>=1.30.0
 xlrd==2.0.2
+
+# Pattern-finder optional dependencies (install if needed)
+# akshare>=1.12.0          # Free data source (alternative to baostock)
+# faiss-cpu>=1.7.0         # Fast vector search for large libraries (>10k samples)
+# dtaidistance>=2.3.0      # Fast DTW computation (10x speedup)

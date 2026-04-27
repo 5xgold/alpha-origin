@@ -1,9 +1,13 @@
 """统一行情数据获取模块
 
 数据源：
-- A股行情 → baostock（不复权）
-- 港股行情 → FutuOpenD（不复权）
+- A股行情 → baostock（默认前复权）
+- 港股行情 → FutuOpenD（默认前复权）
 - 指数行情/行业分类/指数成分股 → baostock
+
+复权说明：
+- 默认使用前复权（qfq），适用于量化回测、技术分析、收益计算
+- 可通过 adjust 参数指定：qfq（前复权）/ hfq（后复权）/ ""（不复权）
 """
 
 import sys
@@ -137,13 +141,13 @@ _SOURCE_REGISTRY = {
 }
 
 
-def _fetch_with_fallback(sources, code_str, start_date, end_date):
+def _fetch_with_fallback(sources, code_str, start_date, end_date, adjust="qfq"):
     """按优先级尝试多个数据源，第一个成功即返回"""
     last_error = None
     for name, fn_name in sources:
         try:
             fn = globals()[fn_name]
-            df = fn(code_str, start_date, end_date)
+            df = fn(code_str, start_date, end_date, adjust)
             if df is not None and not df.empty:
                 return df
         except Exception as e:
@@ -159,18 +163,29 @@ def _fetch_with_fallback(sources, code_str, start_date, end_date):
 # 公开 API：股票行情
 # ============================================================
 
-def get_stock_prices(code, start_date, end_date):
+def get_stock_prices(code, start_date, end_date, adjust="qfq"):
     """获取股票历史行情（带缓存、多数据源 fallback）
 
     A股 → baostock, 港股 → FutuOpenD → 东方财富
     返回 DataFrame[date, open, close, high, low, volume]
+
+    Args:
+        code: 股票代码
+        start_date: 开始日期 YYYY-MM-DD
+        end_date: 结束日期 YYYY-MM-DD
+        adjust: 复权方式
+                - "qfq" 前复权（默认，推荐用于量化回测）
+                - "hfq" 后复权
+                - "" 不复权（实盘下单用）
     """
     code_str = str(code).strip()
     is_hk = _is_hk(code_str)
     if not is_hk:
         code_str = code_str.zfill(6)
 
-    cache_file = Path(CACHE_DIR) / f"{code_str}_{start_date}_{end_date}_raw.csv"
+    # 缓存文件名包含复权方式
+    adjust_suffix = adjust if adjust else "raw"
+    cache_file = Path(CACHE_DIR) / f"{code_str}_{start_date}_{end_date}_{adjust_suffix}.csv"
     cache_file.parent.mkdir(parents=True, exist_ok=True)
 
     if _cache_valid(cache_file, CACHE_EXPIRY_DAYS):
@@ -179,7 +194,7 @@ def get_stock_prices(code, start_date, end_date):
     try:
         market = 'hk_stock' if is_hk else 'a_stock'
         sources = _SOURCE_REGISTRY[market]
-        df = _fetch_with_fallback(sources, code_str, start_date, end_date)
+        df = _fetch_with_fallback(sources, code_str, start_date, end_date, adjust)
 
         df['date'] = pd.to_datetime(df['date'])
         df.to_csv(cache_file, index=False)
@@ -189,17 +204,33 @@ def get_stock_prices(code, start_date, end_date):
         return _EMPTY_PRICE_DF.copy()
 
 
-def _fetch_a_stock_prices(code_str, start_date, end_date):
-    """baostock 获取 A 股行情"""
+def _fetch_a_stock_prices(code_str, start_date, end_date, adjust="qfq"):
+    """baostock 获取 A 股行情
+
+    Args:
+        adjust: 复权方式
+                - "qfq" 前复权（adjustflag="1"）
+                - "hfq" 后复权（adjustflag="2"）
+                - "" 不复权（adjustflag="3"）
+    """
     _ensure_bs_login()
     bs_code = _to_bs_code(code_str)
+
+    # 转换复权参数
+    adjust_map = {
+        "qfq": "1",  # 前复权
+        "hfq": "2",  # 后复权
+        "": "3",     # 不复权
+    }
+    adjustflag = adjust_map.get(adjust, "1")  # 默认前复权
+
     rs = bs.query_history_k_data_plus(
         bs_code,
         "date,open,high,low,close,volume",
         start_date=_to_bs_date(start_date),
         end_date=_to_bs_date(end_date),
         frequency="d",
-        adjustflag="3",  # 不复权
+        adjustflag=adjustflag,
     )
     rows = []
     while (rs.error_code == '0') and rs.next():
@@ -211,16 +242,31 @@ def _fetch_a_stock_prices(code_str, start_date, end_date):
     return df
 
 
-def _fetch_hk_futu(code_str, start_date, end_date):
-    """FutuOpenD 获取港股行情（不复权）"""
+def _fetch_hk_futu(code_str, start_date, end_date, adjust="qfq"):
+    """FutuOpenD 获取港股行情
+
+    Args:
+        adjust: 复权方式
+                - "qfq" 前复权（AuType.QFQ）
+                - "hfq" 后复权（AuType.HFQ）
+                - "" 不复权（AuType.NONE）
+    """
     from futu import OpenQuoteContext, KLType, AuType
+
+    # 转换复权参数
+    adjust_map = {
+        "qfq": AuType.QFQ,   # 前复权
+        "hfq": AuType.HFQ,   # 后复权
+        "": AuType.NONE,     # 不复权
+    }
+    autype = adjust_map.get(adjust, AuType.QFQ)  # 默认前复权
 
     ctx = OpenQuoteContext(host=FUTU_HOST, port=FUTU_PORT)
     try:
         ret, df, _ = ctx.request_history_kline(
             f'HK.{code_str}',
             ktype=KLType.K_DAY,
-            autype=AuType.NONE,
+            autype=autype,
             start=_to_bs_date(start_date),
             end=_to_bs_date(end_date),
         )

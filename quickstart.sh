@@ -37,6 +37,8 @@ usage() {
     echo "  ./quickstart.sh brief [日期]              # 每日简报"
     echo "  ./quickstart.sh review [股票代码]          # 交易复盘"
     echo "  ./quickstart.sh earnings <PDF> <股票代码>  # 财报摘要"
+    echo "  ./quickstart.sh sync-portfolio            # 同步 portfolio.toml → CSV"
+    echo "  ./quickstart.sh pattern <command> [args]  # 形态检索"
     exit 1
 }
 
@@ -159,6 +161,31 @@ do_earnings() {
         --input "$pdf" --code "$code"
 }
 
+# ── 同步持仓配置 ──
+do_sync_portfolio() {
+    step "同步持仓配置"
+    if [ ! -f "$ROOT_DIR/portfolio.toml" ]; then
+        warn "portfolio.toml 不存在，使用示例文件创建..."
+        if [ -f "$ROOT_DIR/portfolio.toml.example" ]; then
+            cp "$ROOT_DIR/portfolio.toml.example" "$ROOT_DIR/portfolio.toml"
+            warn "已创建 portfolio.toml，请修改为你的实际持仓"
+            exit 0
+        else
+            error "示例文件 portfolio.toml.example 不存在"
+        fi
+    fi
+
+    python3 "$ROOT_DIR/shared/portfolio_config.py"
+    info "持仓配置已同步到 risk_control/data/portfolio.csv"
+}
+
+# ── 形态检索 ──
+do_pattern() {
+    step "形态检索"
+    cd "$ROOT_DIR/pattern_finder"
+    ./quickstart.sh "$@"
+}
+
 # ── 主流程 ──
 CMD="${1:-all}"
 shift 2>/dev/null || true
@@ -187,6 +214,12 @@ case "$CMD" in
         ;;
     earnings)
         do_earnings "$1" "$2"
+        ;;
+    sync-portfolio)
+        do_sync_portfolio
+        ;;
+    pattern)
+        do_pattern "$@"
         ;;
     all)
         do_parse "$1"

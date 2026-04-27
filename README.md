@@ -12,8 +12,11 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# 2. 配置数据源
-cp attribution_analysis/.env .env   # 编辑填入 TS_TOKEN / FUTU_HOST / FUTU_PORT
+# 2. 配置数据源和持仓
+cp portfolio.toml.example portfolio.toml  # 复制示例文件
+vim portfolio.toml                         # 编辑为你的实际持仓
+vim .env                                   # 配置 API 密钥（可选）
+./quickstart.sh sync-portfolio             # 同步持仓到 CSV
 
 # 3. 一键全流程（PDF → 归因 → 风控）
 ./quickstart.sh all data/raw/对账单.pdf 2026-01-01 2026-03-31
@@ -29,6 +32,8 @@ cp attribution_analysis/.env .env   # 编辑填入 TS_TOKEN / FUTU_HOST / FUTU_P
 ./quickstart.sh pattern build 600519,000001          # 构建形态样本库
 ./quickstart.sh pattern query 600519                 # 查询股票形态
 ```
+
+**配置文件说明：** 详见 [docs/configuration-guide.md](docs/configuration-guide.md)
 
 ## 系统架构
 

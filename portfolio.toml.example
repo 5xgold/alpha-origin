@@ -1,0 +1,42 @@
+# 持仓配置文件示例
+# Portfolio Configuration Example
+
+# 说明：
+# - code: 股票代码（A股6位数字，港股5位数字）
+# - name: 股票名称
+# - market: 市场（上海/深圳/沪港通/深港通）
+# - quantity: 持仓数量（股）
+# - cost_price: 成本价（元）
+
+# 使用方法：
+# 1. 复制本文件为 portfolio.toml
+# 2. 修改为你的实际持仓
+# 3. 运行 python shared/portfolio_config.py 同步到 CSV
+
+[[holdings]]
+code = "600519"
+name = "贵州茅台"
+market = "上海"
+quantity = 100
+cost_price = 1800.0
+
+[[holdings]]
+code = "000001"
+name = "平安银行"
+market = "深圳"
+quantity = 1000
+cost_price = 12.5
+
+[[holdings]]
+code = "00700"
+name = "腾讯控股"
+market = "沪港通"
+quantity = 100
+cost_price = 350.0
+
+[[holdings]]
+code = "159792"
+name = "互联网ETF"
+market = "深圳"
+quantity = 10000
+cost_price = 0.85

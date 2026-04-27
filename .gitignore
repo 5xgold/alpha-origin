@@ -5,8 +5,9 @@ risk_control/data/
 llm_digest/data/
 output/
 
-# Env
+# Configuration files (sensitive)
 .env
+portfolio.toml
 
 # Python
 __pycache__/

@@ -1,5 +1,16 @@
 # Change Log
 
+## v0.6.1 - 2026-04-27
+- feat(config): 统一配置文件管理
+  - 创建 portfolio.toml：持仓配置文件（TOML 格式）
+  - 创建 shared/portfolio_config.py：TOML → CSV 转换工具
+  - 更新 .gitignore：忽略 portfolio.toml（私密数据）
+  - 创建 portfolio.toml.example：持仓配置示例
+  - 更新 quickstart.sh：添加 sync-portfolio 命令
+  - 更新 requirements.txt：添加 tomli（Python <3.11）
+  - 创建 docs/configuration-guide.md：配置文件使用指南
+  - 更新 README.md：添加配置文件说明
+
 ## v0.6.0 - 2026-04-27
 - feat(pattern-finder): 集成形态相似检索模块（模块5）
   - 重构为标准模块结构：pattern-finder → pattern_finder（Python 命名规范）

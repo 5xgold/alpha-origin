@@ -48,7 +48,7 @@ Phase 1（已完成）                    Phase 2（规划中）
 腾讯云 qclaw（定时触发）
     │
     ├─ 15:30  收盘后 → 拉持仓 → 风控检查 → 复盘 → 推送微信
-    ├─ 08:00  盘前   → 每日简报 → 推送微信
+    ├─ 08:00  盘前   → 持仓情报摘要 → 推送微信
     └─ 不定时  → 重要公告检测 → 告警推送
     │
     ▼
@@ -75,7 +75,7 @@ Phase 1（已完成）                    Phase 2（规划中）
 **目标**：构建自己的信息源矩阵，替代刷新闻的低效方式，LLM 压缩后推送。
 
 **现状 → 目标**：
-- 现在：`daily_brief.py` 依赖东方财富快讯（单一源、噪音大）
+- 现在：信息摘要仍依赖单一快讯源（噪音大）
 - 目标：多源聚合 → 去重去噪 → LLM 压缩 → 结构化日报
 
 **信息源矩阵（逐步构建）**：
@@ -167,5 +167,5 @@ Phase 1（已完成）                    Phase 2（规划中）
 |-------------|-------------|------|
 | P1 每日复盘 | attribution_analysis + risk_control + llm_digest | `shared/broker_api.py` |
 | P2 自动调度 | quickstart.sh 全流程 | `deploy/` + `shared/notifier.py` |
-| P3 信息日报 | llm_digest/daily_brief.py | `shared/news_sources/` |
+| P3 持仓情报摘要 | 新聚合脚本待定 | `shared/news_sources/` |
 | P4 事件提醒 | risk_control（告警逻辑） + llm_digest（摘要） | `shared/event_calendar.py` + `shared/event_alerter.py` |

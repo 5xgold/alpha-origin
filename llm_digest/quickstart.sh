@@ -3,7 +3,6 @@
 #
 # 用法:
 #   ./llm_digest/quickstart.sh review [股票代码]     # 交易复盘
-#   ./llm_digest/quickstart.sh brief [日期]           # 每日简报
 #   ./llm_digest/quickstart.sh earnings <PDF> <代码>  # 财报摘要
 
 set -e
@@ -22,11 +21,6 @@ case "$CMD" in
         [ -n "$1" ] && args="--code $1"
         python3 llm_digest/scripts/trade_review.py $args
         ;;
-    brief)
-        args=""
-        [ -n "$1" ] && args="--date $1"
-        python3 llm_digest/scripts/daily_brief.py $args
-        ;;
     earnings)
         [ -z "$1" ] && echo "用法: ./llm_digest/quickstart.sh earnings <PDF> <股票代码>" && exit 1
         [ -z "$2" ] && echo "用法: ./llm_digest/quickstart.sh earnings <PDF> <股票代码>" && exit 1
@@ -37,7 +31,6 @@ case "$CMD" in
         echo ""
         echo "用法:"
         echo "  ./llm_digest/quickstart.sh review [股票代码]     # 交易复盘"
-        echo "  ./llm_digest/quickstart.sh brief [日期]           # 每日简报"
         echo "  ./llm_digest/quickstart.sh earnings <PDF> <代码>  # 财报摘要"
         exit 1
         ;;

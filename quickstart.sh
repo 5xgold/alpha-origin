@@ -34,7 +34,6 @@ usage() {
     echo "  ./quickstart.sh parse <PDF>"
     echo "  ./quickstart.sh attr [开始日期] [结束日期]"
     echo "  ./quickstart.sh risk [总权益]"
-    echo "  ./quickstart.sh brief [日期]              # 每日简报"
     echo "  ./quickstart.sh review [股票代码]          # 交易复盘"
     echo "  ./quickstart.sh earnings <PDF> <股票代码>  # 财报摘要"
     echo "  ./quickstart.sh sync-portfolio            # 同步 portfolio.toml → CSV"
@@ -130,15 +129,6 @@ do_risk() {
     info "风控报告: output/"
 }
 
-# ── 每日简报 ──
-do_brief() {
-    local date_arg="$1"
-    step "每日简报"
-    local args=""
-    [ -n "$date_arg" ] && args="--date $date_arg"
-    python3 "$ROOT_DIR/llm_digest/scripts/daily_brief.py" $args
-}
-
 # ── 交易复盘 ──
 do_review() {
     local code="$1"
@@ -205,9 +195,6 @@ case "$CMD" in
         ;;
     risk)
         do_risk "$1"
-        ;;
-    brief)
-        do_brief "$1"
         ;;
     review)
         do_review "$1"

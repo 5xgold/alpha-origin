@@ -77,6 +77,7 @@ class RiskControlTests(unittest.TestCase):
                 return False
 
         with patch.object(data_provider, "_cache_valid", return_value=False), \
+             patch.object(data_provider, "_load_latest_matching_cache", return_value=(None, None)), \
              patch.object(data_provider, "_ensure_bs_login"), \
              patch.object(data_provider.bs, "query_history_k_data_plus", return_value=DummyQueryResult()):
             with self.assertRaisesRegex(RuntimeError, "获取基准指数 000300 失败"):

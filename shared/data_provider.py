@@ -70,6 +70,24 @@ def _cache_valid(cache_file, expiry_days):
     return datetime.now() - cache_time < timedelta(days=expiry_days)
 
 
+def _read_cached_frame(cache_file):
+    """读取缓存文件。"""
+    return pd.read_csv(cache_file, parse_dates=['date'])
+
+
+def _load_latest_matching_cache(pattern):
+    """按修改时间回退到最近一次可用缓存。"""
+    matches = sorted(Path(CACHE_DIR).glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)
+    for cache_file in matches:
+        try:
+            df = _read_cached_frame(cache_file)
+            if df is not None and not df.empty:
+                return df, cache_file
+        except Exception:
+            continue
+    return None, None
+
+
 # ============================================================
 # ETF 行业分类（从 brinson.py 迁移）
 # ============================================================
@@ -189,17 +207,34 @@ def get_stock_prices(code, start_date, end_date, adjust="qfq"):
     cache_file.parent.mkdir(parents=True, exist_ok=True)
 
     if _cache_valid(cache_file, CACHE_EXPIRY_DAYS):
-        return pd.read_csv(cache_file, parse_dates=['date'])
+        cached_df = _read_cached_frame(cache_file)
+        if not cached_df.empty:
+            return cached_df
 
     try:
         market = 'hk_stock' if is_hk else 'a_stock'
         sources = _SOURCE_REGISTRY[market]
         df = _fetch_with_fallback(sources, code_str, start_date, end_date, adjust)
+        if df is None or df.empty:
+            raise RuntimeError(f"获取 {code_str} 行情失败")
 
         df['date'] = pd.to_datetime(df['date'])
         df.to_csv(cache_file, index=False)
         return df
     except Exception as e:
+        if cache_file.exists():
+            cached_df = _read_cached_frame(cache_file)
+            if not cached_df.empty:
+                print(f"警告: 获取 {code_str} 实时行情失败，回退到已有缓存: {cache_file.name}")
+                return cached_df
+
+        fallback_df, fallback_file = _load_latest_matching_cache(f"{code_str}_*_*_{adjust_suffix}.csv")
+        if fallback_df is None:
+            fallback_df, fallback_file = _load_latest_matching_cache(f"{code_str}_*_*_*.csv")
+        if fallback_df is not None:
+            print(f"警告: 获取 {code_str} 实时行情失败，回退到最近缓存: {fallback_file.name}")
+            return fallback_df
+
         print(f"警告: 获取 {code_str} 行情失败（所有数据源）: {e}")
         return _EMPTY_PRICE_DF.copy()
 
@@ -296,7 +331,9 @@ def _fetch_hk_index_futu(futu_code, start_date, end_date):
     cache_file.parent.mkdir(parents=True, exist_ok=True)
 
     if _cache_valid(cache_file, CACHE_EXPIRY_DAYS):
-        return pd.read_csv(cache_file, parse_dates=['date'])
+        cached_df = _read_cached_frame(cache_file)
+        if not cached_df.empty:
+            return cached_df
 
     from futu import OpenQuoteContext, KLType, AuType
 
@@ -341,41 +378,56 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
     cache_file.parent.mkdir(parents=True, exist_ok=True)
 
     if _cache_valid(cache_file, CACHE_EXPIRY_DAYS):
-        return pd.read_csv(cache_file, parse_dates=['date'])
+        cached_df = _read_cached_frame(cache_file)
+        if not cached_df.empty:
+            return cached_df
 
-    _ensure_bs_login()
+    try:
+        _ensure_bs_login()
 
-    # 尝试 sh/sz 两个前缀
-    df = None
-    for prefix in ['sh', 'sz']:
-        bs_code = f"{prefix}.{benchmark_index}"
-        rs = bs.query_history_k_data_plus(
-            bs_code,
-            "date,open,high,low,close,volume",
-            start_date=_to_bs_date(start_date),
-            end_date=_to_bs_date(end_date),
-            frequency="d",
-        )
-        rows = []
-        while (rs.error_code == '0') and rs.next():
-            rows.append(rs.get_row_data())
-        if rows:
-            df = pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
-            break
+        # 尝试 sh/sz 两个前缀
+        df = None
+        for prefix in ['sh', 'sz']:
+            bs_code = f"{prefix}.{benchmark_index}"
+            rs = bs.query_history_k_data_plus(
+                bs_code,
+                "date,open,high,low,close,volume",
+                start_date=_to_bs_date(start_date),
+                end_date=_to_bs_date(end_date),
+                frequency="d",
+            )
+            rows = []
+            while (rs.error_code == '0') and rs.next():
+                rows.append(rs.get_row_data())
+            if rows:
+                df = pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
+                break
 
-    if df is None or df.empty:
-        raise RuntimeError(f"获取基准指数 {benchmark_index} 失败")
+        if df is None or df.empty:
+            raise RuntimeError(f"获取基准指数 {benchmark_index} 失败")
 
-    for col in ["open", "high", "low", "close", "volume"]:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-    df['date'] = pd.to_datetime(df['date'])
-    df = df.dropna(subset=["close"])
+        for col in ["open", "high", "low", "close", "volume"]:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.dropna(subset=["close"])
 
-    if df.empty:
-        raise RuntimeError(f"指数 {benchmark_index} 在 {start_date}~{end_date} 无数据")
+        if df.empty:
+            raise RuntimeError(f"指数 {benchmark_index} 在 {start_date}~{end_date} 无数据")
 
-    df.to_csv(cache_file, index=False)
-    return df
+        df.to_csv(cache_file, index=False)
+        return df
+    except Exception:
+        if cache_file.exists():
+            cached_df = _read_cached_frame(cache_file)
+            if not cached_df.empty:
+                print(f"警告: 获取基准 {benchmark_index} 实时行情失败，回退到已有缓存: {cache_file.name}")
+                return cached_df
+
+        fallback_df, fallback_file = _load_latest_matching_cache(f"benchmark_{benchmark_index}_*.csv")
+        if fallback_df is not None:
+            print(f"警告: 获取基准 {benchmark_index} 实时行情失败，回退到最近缓存: {fallback_file.name}")
+            return fallback_df
+        raise
 
 
 def get_composite_benchmark_prices(benchmark_components, start_date, end_date):

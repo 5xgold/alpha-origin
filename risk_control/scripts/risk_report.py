@@ -13,6 +13,7 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from shared.data_provider import get_stock_prices, get_benchmark_prices
+from shared.portfolio_config import sync_portfolio_to_csv
 from risk_control.config import (
     MARKET_INDEX, ATR_PERIOD, PORTFOLIO_LOOKBACK_DAYS, DATA_FREQ,
 )
@@ -320,6 +321,14 @@ def run_risk_check(portfolio_path, total_equity):
     print(f"风控检查 {today}")
     print(f"数据频率: {DATA_FREQ}")
     print()
+
+    # 0. 自动从 portfolio.toml 同步持仓到 CSV
+    try:
+        sync_portfolio_to_csv(csv_path=portfolio_path)
+    except FileNotFoundError:
+        print("  跳过 portfolio.toml 同步（文件不存在，使用已有 CSV）")
+    except Exception as e:
+        print(f"  portfolio.toml 同步失败: {e}，使用已有 CSV")
 
     # 1. 加载持仓
     print("加载持仓...")

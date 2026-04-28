@@ -11,6 +11,7 @@
 """
 
 import sys
+import os
 import json
 import atexit
 from pathlib import Path
@@ -18,6 +19,226 @@ from datetime import datetime, timedelta
 import pandas as pd
 import baostock as bs
 import requests
+
+
+# ============================================================
+# NeoData 数据源（A股/ETF 主力，通过 QClaw 网关）
+# ============================================================
+import uuid
+
+_NEO_PROXY_PORT = os.getenv("AUTH_GATEWAY_PORT", "19000")
+_NEO_BASE_URL   = f"http://localhost:{_NEO_PROXY_PORT}/proxy/api"
+_NEO_REMOTE_URL = "https://jprx.m.qq.com/aizone/skillserver/v1/proxy/teamrouter_neodata/query"
+
+
+_NEO_CACHE_DIR = None  # lazy init after config import
+
+
+def _neo_cache_dir():
+    global _NEO_CACHE_DIR
+    if _NEO_CACHE_DIR is None:
+        _NEO_CACHE_DIR = Path(CACHE_DIR) / "neodata"
+        _NEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return _NEO_CACHE_DIR
+
+
+def _neo_cache_path(code_str: str, market: str = "a") -> Path:
+    return _neo_cache_dir() / f"{code_str}_{market}.csv"
+
+
+def _neo_load_cache(code_str: str, market: str = "a") -> pd.DataFrame:
+    """读取 NeoData 增量缓存"""
+    p = _neo_cache_path(code_str, market)
+    if not p.exists():
+        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+    df = pd.read_csv(p, parse_dates=["date"])
+    return df
+
+
+def _neo_save_cache(df: pd.DataFrame, code_str: str, market: str = "a"):
+    """写入 NeoData 增量缓存（去重、按日期排序）"""
+    if df.empty:
+        return
+    p = _neo_cache_path(code_str, market)
+    existing = _neo_load_cache(code_str, market)
+    if not existing.empty:
+        combined = pd.concat([existing, df], ignore_index=True)
+    else:
+        combined = df.copy()
+    combined["date"] = pd.to_datetime(combined["date"])
+    combined = combined.drop_duplicates(subset=["date"]).sort_values("date").reset_index(drop=True)
+    combined.to_csv(p, index=False)
+
+
+def _neo_cached_fetch(code_str: str, start_date: str, end_date: str,
+                      market: str, fetch_fn) -> pd.DataFrame:
+    """带增量缓存的 NeoData 获取：缓存已覆盖则直接返回，否则调 API 并合并"""
+    cached = _neo_load_cache(code_str, market)
+    sd = pd.to_datetime(start_date)
+    ed = pd.to_datetime(end_date)
+
+    if not cached.empty:
+        cached_min = cached["date"].min()
+        cached_max = cached["date"].max()
+        # 缓存完全覆盖请求范围 → 直接返回切片
+        if cached_min <= sd and cached_max >= ed:
+            sliced = cached[(cached["date"] >= sd) & (cached["date"] <= ed)].reset_index(drop=True)
+            if not sliced.empty:
+                return sliced
+        # 今天的数据可能还没收盘，允许重新拉取当天
+        today = pd.to_datetime(datetime.now().strftime("%Y-%m-%d"))
+        if cached_max >= ed and cached_max < today:
+            sliced = cached[(cached["date"] >= sd) & (cached["date"] <= ed)].reset_index(drop=True)
+            if not sliced.empty:
+                return sliced
+
+    # 缓存不够，调 API
+    df = fetch_fn()
+    if df is not None and not df.empty:
+        _neo_save_cache(df, code_str, market)
+        # 从合并后的缓存中切片返回
+        full = _neo_load_cache(code_str, market)
+        return full[(full["date"] >= sd) & (full["date"] <= ed)].reset_index(drop=True)
+
+    # API 也没数据，但缓存有部分数据可用
+    if not cached.empty:
+        sliced = cached[(cached["date"] >= sd) & (cached["date"] <= ed)].reset_index(drop=True)
+        if not sliced.empty:
+            return sliced
+
+    return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+
+
+def _call_neodata(query: str) -> dict:
+    """发请求到 NeoData，返回原始 dict"""
+    payload = {
+        "channel": "neodata", "sub_channel": "qclaw", "query": query,
+        "request_id": uuid.uuid4().hex, "data_type": "api",
+        "se_params": {}, "extra_params": {},
+    }
+    headers = {"Content-Type": "application/json", "Remote-URL": _NEO_REMOTE_URL}
+    resp = requests.post(_NEO_BASE_URL, headers=headers, json=payload, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _neo_parse_kline(content: str) -> pd.DataFrame:
+    """解析 NeoData 股票历史走势表格 → DataFrame[date,open,high,low,close,volume]
+    列顺序: 日期,开盘价,收盘价,涨跌幅,成交量(含逗号),成交额(含逗号),最高价,最低价,换手率
+    """
+    rows = []
+    for line in content.splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        parts = [p for p in parts if p]  # 去掉空字符串
+        # 数据行: len==9 且首列是日期
+        if len(parts) == 9 and parts[0].startswith("20"):
+            date_str = parts[0]
+            try:
+                open_p  = float(parts[1])
+                close_p = float(parts[2])
+                # 成交量第5列(含逗号如'82,222,200')
+                vol     = int(parts[4].replace(",", "").replace(".00",""))
+                # 最高/最低在第7、8列
+                high_p  = float(parts[6]) if parts[6] else close_p
+                low_p   = float(parts[7]) if parts[7] else close_p
+            except ValueError:
+                continue  # 跳过"未开盘"等行
+            rows.append({"date": date_str, "open": open_p, "high": high_p,
+                        "low": low_p, "close": close_p, "volume": vol})
+    if not rows:
+        return pd.DataFrame(columns=["date","open","high","low","close","volume"])
+    df = pd.DataFrame(rows)
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date"])
+    df = df.sort_values("date").reset_index(drop=True)
+    return df
+
+
+def _neo_parse_etf_kline(content: str) -> pd.DataFrame:
+    """解析 NeoData 基金历史行情表格 → DataFrame[date,open,high,low,close,volume]"""
+    rows = []
+    in_table = False
+    for line in content.splitlines():
+        line = line.strip()
+        if line.startswith("|") and "开盘价" in line and "日期" in line:
+            in_table = True
+            continue
+        if in_table and line.startswith("|"):
+            parts = [p.strip() for p in line.strip("|").split("|")]
+            if len(parts) >= 6 and parts[-1].startswith("20"):
+                date_str = parts[-1]
+                try:
+                    open_p  = float(parts[0])
+                    close_p = float(parts[1])
+                    high_p  = float(parts[2]) if parts[2] else close_p
+                    low_p   = float(parts[3]) if parts[3] else close_p
+                    vol_str = parts[4]
+                    vol     = int(float(vol_str.replace(",", "").replace(".00", "")))
+                except ValueError:
+                    continue
+                rows.append({"date": date_str, "open": open_p, "high": high_p,
+                            "low": low_p, "close": close_p, "volume": vol})
+    if not rows:
+        return pd.DataFrame(columns=["date","open","high","low","close","volume"])
+    df = pd.DataFrame(rows)
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date"])
+    df = df.sort_values("date").reset_index(drop=True)
+    return df
+
+
+def _fetch_neodata_a_raw(code_str: str) -> pd.DataFrame:
+    """NeoData A 股原始 API 调用（不含缓存逻辑）"""
+    result = _call_neodata(f"{code_str} 近期行情 日K线")
+    data = result.get("data", {})
+    recall = data.get("apiData", {}).get("apiRecall", [])
+    for item in recall:
+        if "历史走势" in item.get("type", ""):
+            df = _neo_parse_kline(item.get("content", ""))
+            if not df.empty:
+                return df
+    return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+
+
+def _fetch_neodata_a_prices(code_str: str, start_date: str, end_date: str,
+                             _adjust: str = "qfq") -> pd.DataFrame:
+    """NeoData 获取 A 股历史 K 线（带增量缓存）"""
+    try:
+        return _neo_cached_fetch(
+            code_str, start_date, end_date, market="a",
+            fetch_fn=lambda: _fetch_neodata_a_raw(code_str),
+        )
+    except Exception as e:
+        raise RuntimeError(f"NeoData 请求失败: {e}") from e
+
+
+def _fetch_neodata_etf_raw(code_str: str) -> pd.DataFrame:
+    """NeoData ETF 原始 API 调用（不含缓存逻辑）"""
+    result = _call_neodata(f"{code_str} ETF基金 近期行情 日K线")
+    data = result.get("data", {})
+    recall = data.get("apiData", {}).get("apiRecall", [])
+    for item in recall:
+        if "基金历史行情" in item.get("type", ""):
+            df = _neo_parse_etf_kline(item.get("content", ""))
+            if not df.empty:
+                return df
+    return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+
+
+def _fetch_neodata_etf_prices(code_str: str, start_date: str, end_date: str,
+                              _adjust: str = "qfq") -> pd.DataFrame:
+    """NeoData 获取 ETF 基金历史 K 线（带增量缓存）"""
+    try:
+        return _neo_cached_fetch(
+            code_str, start_date, end_date, market="etf",
+            fetch_fn=lambda: _fetch_neodata_etf_raw(code_str),
+        )
+    except Exception as e:
+        raise RuntimeError(f"NeoData ETF 请求失败: {e}") from e
+
 
 sys.path.append(str(Path(__file__).parent.parent))
 from shared.config import CACHE_DIR, CACHE_EXPIRY_DAYS, SECTOR_CACHE_DAYS, FUTU_HOST, FUTU_PORT, TS_TOKEN
@@ -151,7 +372,11 @@ _EMPTY_PRICE_DF = pd.DataFrame(columns=['date', 'open', 'high', 'low', 'close', 
 # 按优先级排列，第一个成功即返回
 _SOURCE_REGISTRY = {
     'a_stock': [
+        ('neodata', '_fetch_neodata_a_prices'),
         ('baostock', '_fetch_a_stock_prices'),
+    ],
+    'etf': [
+        ('neodata', '_fetch_neodata_etf_prices'),
     ],
     'hk_stock': [
         ('futu', '_fetch_hk_futu'),
@@ -212,7 +437,9 @@ def get_stock_prices(code, start_date, end_date, adjust="qfq"):
             return cached_df
 
     try:
-        market = 'hk_stock' if is_hk else 'a_stock'
+        # ETF 检测（深交所 15/16 开头，或沪市 5 开头带 ETF 关键字时走 ETF 路径）
+        is_etf = code_str[:2] in ("15", "16") or (code_str[0] == "5" and len(code_str) == 6)
+        market = 'hk_stock' if is_hk else ('etf' if is_etf else 'a_stock')
         sources = _SOURCE_REGISTRY[market]
         df = _fetch_with_fallback(sources, code_str, start_date, end_date, adjust)
         if df is None or df.empty:

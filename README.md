@@ -208,9 +208,33 @@ cd risk_control
 
 | 市场 | 数据源 | 备注 |
 |------|--------|------|
-| A股行情 | baostock | 不复权 |
-| 港股行情 | FutuOpenD → 东方财富 | 多源 fallback，不复权 |
+| A股行情 | baostock | 默认前复权 |
+| 港股行情 | FutuOpenD → 东方财富 | 多源 fallback，默认前复权 |
 | 指数/行业 | baostock + 东方财富 | 成分股 & 申万行业指数 |
+
+## 数据目录结构
+
+```
+PythonProjects/
+├── data/                           # 共享数据（所有模块可访问）
+│   ├── cache/                      # 行情数据缓存（自动生成）
+│   └── raw/                        # 原始输入文件（PDF对账单）
+├── attribution_analysis/data/      # 归因分析专属数据
+│   ├── trades.csv                  # 交易记录（从PDF解析）
+│   ├── holdings.csv                # 持仓快照
+│   └── asset_summary.json          # 账户资产摘要
+├── risk_control/data/              # 风控专属数据
+│   └── portfolio.csv               # 当前持仓（从portfolio.toml同步）
+├── llm_digest/data/                # LLM专属数据
+│   └── earnings/                   # 财报PDF
+└── output/                         # 统一报告输出目录
+```
+
+**数据分类规则：**
+- **共享数据** (`/data/`) - 行情缓存、基准数据，通过 `shared.data_provider` 访问
+- **模块专属** (`{module}/data/`) - 模块特定的输入/输出，模块内部访问
+
+详见 [docs/data-directory-structure.md](docs/data-directory-structure.md)
 
 ## 项目结构
 

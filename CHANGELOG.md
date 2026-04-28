@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.6.2 - 2026-04-28
+
+### docs(structure): 规范数据目录结构
+
+- 创建 docs/data-directory-structure.md：数据目录规范文档
+- 明确数据分类规则：
+  - 共享数据（/data/）：行情缓存、基准数据，通过 shared.data_provider 访问
+  - 模块专属（{module}/data/）：模块特定输入/输出，模块内部访问
+- 删除空的缓存目录：attribution_analysis/data/cache, pattern_finder/data/cache
+- 更新 README.md：添加数据目录结构说明
+
 ## v0.6.1 - 2026-04-27
 
 ### feat(config): 统一配置文件管理

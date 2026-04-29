@@ -1,6 +1,16 @@
 # 持仓配置文件示例
 # Portfolio Configuration Example
 
+# ========== 账户信息 ==========
+[account]
+total_equity = 500000       # 总资产（元）
+total_market_value = 350000 # 总市值（元）
+available_cash = 150000     # 可用现金（元）
+floating_pnl = 0.0          # 浮动盈亏（元）
+daily_pnl = 0.0             # 当日盈亏（元）
+position_ratio = 0.70       # 仓位比例
+update_time = "2026-01-01 09:00"
+
 # 说明：
 # - code: 股票代码（A股6位数字，港股5位数字）
 # - name: 股票名称
@@ -9,9 +19,9 @@
 # - cost_price: 成本价（元）
 
 # 使用方法：
-# 1. 复制本文件为 portfolio.toml
-# 2. 修改为你的实际持仓
-# 3. 运行 python shared/portfolio_config.py 同步到 CSV
+# 1. 运行 ./scripts/init_project.sh 自动生成配置文件
+# 2. 或手动复制本文件为 portfolio.toml，修改为你的实际持仓
+# 3. 运行 ./quickstart.sh risk 即可执行风控检查
 
 [[holdings]]
 code = "600519"

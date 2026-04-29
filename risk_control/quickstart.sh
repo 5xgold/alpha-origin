@@ -1,8 +1,7 @@
 #!/bin/bash
 # 风控检查 - 快速启动脚本
-# 用法: ./quickstart.sh [总权益] [持仓CSV路径]
+# 用法: ./quickstart.sh [总权益]
 # 示例: ./quickstart.sh 500000
-#       ./quickstart.sh 500000 data/portfolio.csv
 
 set -e
 
@@ -20,7 +19,6 @@ warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 
 EQUITY="${1:-500000}"
-PORTFOLIO="${2:-data/portfolio.csv}"
 
 echo "=========================================="
 echo "  风控检查 - 快速启动"
@@ -62,17 +60,10 @@ fi
 # ── 检查持仓文件 ──
 mkdir -p data ../output
 
-if [ ! -f "$PORTFOLIO" ]; then
-    # 尝试从归因模块复制
-    if [ -f "$ROOT_DIR/attribution_analysis/data/holdings.csv" ]; then
-        cp "$ROOT_DIR/attribution_analysis/data/holdings.csv" data/portfolio.csv
-        PORTFOLIO="data/portfolio.csv"
-        info "已从 attribution_analysis 复制持仓: $PORTFOLIO"
-    else
-        error "未找到持仓文件: $PORTFOLIO\n  格式: code,name,market,quantity,cost_price"
-    fi
+if [ ! -f "$ROOT_DIR/portfolio.toml" ]; then
+    error "未找到持仓文件: $ROOT_DIR/portfolio.toml"
 else
-    info "持仓文件: $PORTFOLIO"
+    info "持仓文件: $ROOT_DIR/portfolio.toml"
 fi
 
 info "总权益: ¥$(printf "%'.0f" "$EQUITY")"
@@ -81,7 +72,6 @@ echo ""
 # ── 运行风控检查 ──
 cd "$ROOT_DIR"
 python3 risk_control/scripts/risk_report.py \
-    --portfolio "risk_control/$PORTFOLIO" \
     --equity "$EQUITY"
 
 echo ""

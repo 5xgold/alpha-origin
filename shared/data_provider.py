@@ -14,6 +14,7 @@ import sys
 import os
 import json
 import atexit
+import re
 from pathlib import Path
 from datetime import datetime, timedelta
 import pandas as pd
@@ -309,6 +310,161 @@ def _load_latest_matching_cache(pattern):
     return None, None
 
 
+def _benchmark_cache_dir() -> Path:
+    path = Path(CACHE_DIR) / "benchmarks"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _benchmark_series_key(benchmark_index: str) -> str:
+    return str(benchmark_index).replace(".", "_")
+
+
+def _benchmark_series_path(benchmark_index: str) -> Path:
+    return _benchmark_cache_dir() / f"{_benchmark_series_key(benchmark_index)}.csv"
+
+
+def _empty_benchmark_df() -> pd.DataFrame:
+    return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+
+
+def _normalize_ohlcv_frame(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return _empty_benchmark_df()
+
+    normalized = df.copy()
+    normalized["date"] = pd.to_datetime(normalized["date"], errors="coerce")
+    for col in ["open", "high", "low", "close", "volume"]:
+        if col in normalized.columns:
+            normalized[col] = pd.to_numeric(normalized[col], errors="coerce")
+        else:
+            normalized[col] = pd.NA
+
+    normalized = normalized.dropna(subset=["date", "close"])
+    normalized = normalized[["date", "open", "high", "low", "close", "volume"]]
+    normalized = normalized.drop_duplicates(subset=["date"], keep="last")
+    normalized = normalized.sort_values("date").reset_index(drop=True)
+    return normalized
+
+
+def _load_benchmark_series(benchmark_index: str) -> pd.DataFrame:
+    path = _benchmark_series_path(benchmark_index)
+    if not path.exists():
+        return _empty_benchmark_df()
+    return _normalize_ohlcv_frame(pd.read_csv(path, parse_dates=["date"]))
+
+
+def _save_benchmark_series(df: pd.DataFrame, benchmark_index: str):
+    normalized = _normalize_ohlcv_frame(df)
+    if normalized.empty:
+        return
+    normalized.to_csv(_benchmark_series_path(benchmark_index), index=False)
+
+
+def _merge_benchmark_series(existing: pd.DataFrame, incoming: pd.DataFrame) -> pd.DataFrame:
+    if existing is None or existing.empty:
+        return _normalize_ohlcv_frame(incoming)
+    if incoming is None or incoming.empty:
+        return _normalize_ohlcv_frame(existing)
+    combined = pd.concat([existing, incoming], ignore_index=True)
+    return _normalize_ohlcv_frame(combined)
+
+
+def _seed_benchmark_series_from_legacy_cache(benchmark_index: str) -> pd.DataFrame:
+    existing = _load_benchmark_series(benchmark_index)
+    legacy_pattern = f"benchmark_{_benchmark_series_key(benchmark_index)}_*.csv"
+    legacy_files = sorted(Path(CACHE_DIR).glob(legacy_pattern), key=lambda path: path.stat().st_mtime)
+    merged = existing
+    for cache_file in legacy_files:
+        try:
+            frame = _normalize_ohlcv_frame(pd.read_csv(cache_file, parse_dates=["date"]))
+        except Exception:
+            continue
+        if not frame.empty:
+            merged = _merge_benchmark_series(merged, frame)
+
+    if not merged.empty and (existing.empty or len(merged) != len(existing)):
+        _save_benchmark_series(merged, benchmark_index)
+
+    return merged
+
+
+def _slice_benchmark_series(df: pd.DataFrame, start_date: str, end_date: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return _empty_benchmark_df()
+    start_ts = pd.to_datetime(start_date)
+    end_ts = pd.to_datetime(end_date)
+    sliced = df[(df["date"] >= start_ts) & (df["date"] <= end_ts)].reset_index(drop=True)
+    return _normalize_ohlcv_frame(sliced)
+
+
+def _find_missing_benchmark_dates(df: pd.DataFrame, start_date: str, end_date: str) -> list[str]:
+    """找出请求区间内缺失的工作日，用于单日补数。"""
+    if df is None or df.empty:
+        return []
+
+    start_ts = pd.to_datetime(start_date)
+    end_ts = pd.to_datetime(end_date)
+    actual_dates = {ts.normalize() for ts in pd.to_datetime(df["date"])}
+    expected_dates = pd.bdate_range(start=start_ts, end=end_ts)
+    missing = [ts.strftime("%Y%m%d") for ts in expected_dates if ts.normalize() not in actual_dates]
+    return missing
+
+
+def _infer_a_index_exchange(benchmark_index: str) -> str:
+    return "SZ" if str(benchmark_index).startswith("399") else "SH"
+
+
+def _fetch_neodata_a_index_snapshot(benchmark_index: str) -> pd.DataFrame:
+    """用 NeoData 拉取 A 股指数当日快照，补到本地历史缓存。"""
+    exchange = _infer_a_index_exchange(benchmark_index)
+    query = f"{benchmark_index}.{exchange} A股指数 今日行情"
+    result = _call_neodata(query)
+    recall = result.get("data", {}).get("apiData", {}).get("apiRecall", [])
+    target_code = f"{benchmark_index}.{exchange}"
+
+    for item in recall:
+        if "股票实时行情" not in item.get("type", ""):
+            continue
+        content = item.get("content", "")
+        if target_code not in content:
+            continue
+
+        def _extract(patterns):
+            for pattern in patterns:
+                match = re.search(pattern, content)
+                if match:
+                    return match.group(1).replace(",", "").strip()
+            return None
+
+        date_text = _extract([r"数据更新时间:\s*([0-9/\-]{10})"])
+        close_text = _extract([r"最新价格:\s*([0-9,]+(?:\.[0-9]+)?)"])
+        open_text = _extract([r"今日开盘价格:\s*([0-9,]+(?:\.[0-9]+)?)"])
+        high_text = _extract([r"最高(?:点|价):\s*([0-9,]+(?:\.[0-9]+)?)"])
+        low_text = _extract([r"最低(?:点|价):\s*([0-9,]+(?:\.[0-9]+)?)"])
+        volume_text = _extract([r"成交数量\(手\):\s*([0-9,]+)"])
+
+        if not date_text or not close_text:
+            continue
+
+        close_px = float(close_text)
+        open_px = float(open_text) if open_text else close_px
+        high_px = float(high_text) if high_text else close_px
+        low_px = float(low_text) if low_text else close_px
+        volume = int(volume_text) * 100 if volume_text else 0
+
+        return _normalize_ohlcv_frame(pd.DataFrame([{
+            "date": date_text.replace("/", "-"),
+            "open": open_px,
+            "high": high_px,
+            "low": low_px,
+            "close": close_px,
+            "volume": volume,
+        }]))
+
+    return _empty_benchmark_df()
+
+
 # ============================================================
 # ETF 行业分类（从 brinson.py 迁移）
 # ============================================================
@@ -556,11 +712,22 @@ def _fetch_hk_index_futu(futu_code, start_date, end_date):
     """
     cache_file = Path(CACHE_DIR) / f"benchmark_{futu_code.replace('.', '_')}_{start_date}_{end_date}.csv"
     cache_file.parent.mkdir(parents=True, exist_ok=True)
+    series_df = _seed_benchmark_series_from_legacy_cache(futu_code)
+    sliced = _slice_benchmark_series(series_df, start_date, end_date)
+    start_ts = pd.to_datetime(start_date)
+    end_ts = pd.to_datetime(end_date)
+    today_ts = pd.to_datetime(datetime.now().strftime("%Y-%m-%d"))
+    required_end = min(end_ts, today_ts)
+
+    if not sliced.empty and sliced["date"].min() <= start_ts and sliced["date"].max() >= required_end:
+        return sliced
 
     if _cache_valid(cache_file, CACHE_EXPIRY_DAYS):
         cached_df = _read_cached_frame(cache_file)
         if not cached_df.empty:
-            return cached_df
+            series_df = _merge_benchmark_series(series_df, cached_df)
+            _save_benchmark_series(series_df, futu_code)
+            return _slice_benchmark_series(series_df, start_date, end_date)
 
     from futu import OpenQuoteContext, KLType, AuType
 
@@ -585,29 +752,89 @@ def _fetch_hk_index_futu(futu_code, start_date, end_date):
         df = df.dropna(subset=['close']).sort_values('date').reset_index(drop=True)
 
         df.to_csv(cache_file, index=False)
-        return df
+        series_df = _merge_benchmark_series(series_df, df)
+        _save_benchmark_series(series_df, futu_code)
+        return _slice_benchmark_series(series_df, start_date, end_date)
     finally:
         ctx.close()
-
-
-
 
 # ============================================================
 # 公开 API：基准指数行情
 # ============================================================
 
 def get_benchmark_prices(benchmark_index, start_date, end_date):
-    """获取基准指数行情（带缓存）→ baostock
+    """获取基准指数行情（优先持久化时序缓存，不足时再补数）
 
     返回 DataFrame[date, open, close, high, low, volume]
     """
+    series_df = _seed_benchmark_series_from_legacy_cache(benchmark_index)
+    sliced = _slice_benchmark_series(series_df, start_date, end_date)
+    start_ts = pd.to_datetime(start_date)
+    end_ts = pd.to_datetime(end_date)
+    today_ts = pd.to_datetime(datetime.now().strftime("%Y-%m-%d"))
+    required_end = min(end_ts, today_ts)
+
+    if not sliced.empty and sliced["date"].min() <= start_ts and sliced["date"].max() >= required_end:
+        return sliced
+
+    if "." not in str(benchmark_index):
+        try:
+            latest_bar = _fetch_neodata_a_index_snapshot(str(benchmark_index))
+            if not latest_bar.empty:
+                series_df = _merge_benchmark_series(series_df, latest_bar)
+                _save_benchmark_series(series_df, benchmark_index)
+                sliced = _slice_benchmark_series(series_df, start_date, end_date)
+                if not sliced.empty and sliced["date"].min() <= start_ts and sliced["date"].max() >= required_end:
+                    return sliced
+        except Exception:
+            pass
+
     cache_file = Path(CACHE_DIR) / f"benchmark_{benchmark_index}_{start_date}_{end_date}.csv"
     cache_file.parent.mkdir(parents=True, exist_ok=True)
 
     if _cache_valid(cache_file, CACHE_EXPIRY_DAYS):
         cached_df = _read_cached_frame(cache_file)
         if not cached_df.empty:
-            return cached_df
+            series_df = _merge_benchmark_series(series_df, cached_df)
+            _save_benchmark_series(series_df, benchmark_index)
+            sliced = _slice_benchmark_series(series_df, start_date, end_date)
+            missing_dates = _find_missing_benchmark_dates(sliced, start_date, end_date)
+            if not missing_dates:
+                return sliced
+
+    sliced = _slice_benchmark_series(series_df, start_date, end_date)
+    missing_dates = _find_missing_benchmark_dates(sliced, start_date, end_date)
+    if missing_dates and len(missing_dates) <= 10:
+        for missing_date in missing_dates:
+            try:
+                day_df = _empty_benchmark_df()
+                _ensure_bs_login()
+                for prefix in ['sh', 'sz']:
+                    bs_code = f"{prefix}.{benchmark_index}"
+                    rs = bs.query_history_k_data_plus(
+                        bs_code,
+                        "date,open,high,low,close,volume",
+                        start_date=_to_bs_date(missing_date),
+                        end_date=_to_bs_date(missing_date),
+                        frequency="d",
+                    )
+                    rows = []
+                    while (rs.error_code == '0') and rs.next():
+                        rows.append(rs.get_row_data())
+                    if rows:
+                        day_df = pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
+                        break
+                day_df = _normalize_ohlcv_frame(day_df)
+                if not day_df.empty:
+                    series_df = _merge_benchmark_series(series_df, day_df)
+            except Exception:
+                continue
+
+        if not series_df.empty:
+            _save_benchmark_series(series_df, benchmark_index)
+            sliced = _slice_benchmark_series(series_df, start_date, end_date)
+            if not _find_missing_benchmark_dates(sliced, start_date, end_date):
+                return sliced
 
     try:
         _ensure_bs_login()
@@ -642,17 +869,29 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
             raise RuntimeError(f"指数 {benchmark_index} 在 {start_date}~{end_date} 无数据")
 
         df.to_csv(cache_file, index=False)
-        return df
+        series_df = _merge_benchmark_series(series_df, df)
+        _save_benchmark_series(series_df, benchmark_index)
+        return _slice_benchmark_series(series_df, start_date, end_date)
     except Exception:
         if cache_file.exists():
             cached_df = _read_cached_frame(cache_file)
             if not cached_df.empty:
                 print(f"警告: 获取基准 {benchmark_index} 实时行情失败，回退到已有缓存: {cache_file.name}")
+                series_df = _merge_benchmark_series(series_df, cached_df)
+                _save_benchmark_series(series_df, benchmark_index)
                 return cached_df
+
+        series_df = _load_benchmark_series(benchmark_index)
+        sliced = _slice_benchmark_series(series_df, start_date, end_date)
+        if not sliced.empty:
+            print(f"警告: 获取基准 {benchmark_index} 实时行情失败，回退到本地时序缓存")
+            return sliced
 
         fallback_df, fallback_file = _load_latest_matching_cache(f"benchmark_{benchmark_index}_*.csv")
         if fallback_df is not None:
             print(f"警告: 获取基准 {benchmark_index} 实时行情失败，回退到最近缓存: {fallback_file.name}")
+            series_df = _merge_benchmark_series(series_df, fallback_df)
+            _save_benchmark_series(series_df, benchmark_index)
             return fallback_df
         raise
 

@@ -1,7 +1,7 @@
 """风控检查报告 — 主入口
 
 Usage:
-    python scripts/risk_report.py --portfolio data/portfolio.csv --equity 500000
+    python scripts/risk_report.py --equity 500000
 """
 
 import sys
@@ -13,7 +13,7 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from shared.data_provider import get_stock_prices, get_benchmark_prices, get_composite_benchmark_prices
-from shared.portfolio_config import sync_portfolio_to_csv, load_account_config
+from shared.portfolio_config import load_account_config, load_portfolio_from_toml
 from shared.config import parse_benchmark_config
 from risk_control.config import (
     MARKET_INDEX, ATR_PERIOD, PORTFOLIO_LOOKBACK_DAYS, DATA_FREQ,
@@ -28,12 +28,8 @@ from risk_control.scripts.anomaly_detect import detect_anomalies
 # 数据加载
 # ═══════════════════════════════════════════
 
-def load_portfolio(csv_path):
-    """加载持仓 CSV"""
-    df = pd.read_csv(csv_path, dtype={"code": str})
-    for col in ["quantity", "cost_price"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-    return df
+ROOT_DIR = Path(__file__).parent.parent.parent
+DEFAULT_PORTFOLIO_TOML = ROOT_DIR / "portfolio.toml"
 
 
 def _market_index_label(components):
@@ -375,24 +371,16 @@ def format_md_report(today, terminal_text):
 # 主流程
 # ═══════════════════════════════════════════
 
-def run_risk_check(portfolio_path, total_equity):
+def run_risk_check(total_equity):
     """执行完整风控检查"""
     today = datetime.now().strftime("%Y-%m-%d")
     print(f"风控检查 {today}")
     print(f"数据频率: {DATA_FREQ}")
     print()
 
-    # 0. 自动从 portfolio.toml 同步持仓到 CSV
-    try:
-        sync_portfolio_to_csv(csv_path=portfolio_path)
-    except FileNotFoundError:
-        print("  跳过 portfolio.toml 同步（文件不存在，使用已有 CSV）")
-    except Exception as e:
-        print(f"  portfolio.toml 同步失败: {e}，使用已有 CSV")
-
     # 1. 加载持仓
     print("加载持仓...")
-    portfolio_df = load_portfolio(portfolio_path)
+    portfolio_df = load_portfolio_from_toml(str(DEFAULT_PORTFOLIO_TOML))
     print(f"  {len(portfolio_df)} 只持仓")
 
     # 2. 获取行情
@@ -449,7 +437,6 @@ def run_risk_check(portfolio_path, total_equity):
 
 def main():
     parser = argparse.ArgumentParser(description="风控检查报告")
-    parser.add_argument("--portfolio", required=True, help="持仓 CSV 路径")
     parser.add_argument("--equity", type=float, default=None,
                         help="总权益（含现金），不指定则从 portfolio.toml 读取")
     args = parser.parse_args()
@@ -457,14 +444,14 @@ def main():
     equity = args.equity
     if equity is None:
         try:
-            account = load_account_config()
+            account = load_account_config(str(DEFAULT_PORTFOLIO_TOML))
             equity = account.get("total_equity")
         except FileNotFoundError:
             pass
     if equity is None:
         parser.error("未指定 --equity 且 portfolio.toml 中无 [account].total_equity")
 
-    run_risk_check(args.portfolio, equity)
+    run_risk_check(equity)
 
 
 if __name__ == "__main__":

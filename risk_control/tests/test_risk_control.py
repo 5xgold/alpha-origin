@@ -1,4 +1,6 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import pandas as pd
@@ -76,12 +78,39 @@ class RiskControlTests(unittest.TestCase):
             def next(self):
                 return False
 
-        with patch.object(data_provider, "_cache_valid", return_value=False), \
+        with TemporaryDirectory() as tmpdir, \
+             patch.object(data_provider, "CACHE_DIR", tmpdir), \
+             patch.object(data_provider, "_cache_valid", return_value=False), \
              patch.object(data_provider, "_load_latest_matching_cache", return_value=(None, None)), \
+             patch.object(data_provider, "_fetch_neodata_a_index_snapshot", return_value=pd.DataFrame()), \
              patch.object(data_provider, "_ensure_bs_login"), \
              patch.object(data_provider.bs, "query_history_k_data_plus", return_value=DummyQueryResult()):
             with self.assertRaisesRegex(RuntimeError, "获取基准指数 000300 失败"):
                 data_provider.get_benchmark_prices("000300", "20240101", "20240131")
+
+    def test_get_benchmark_prices_seeds_persistent_series_cache_from_legacy_files(self):
+        legacy = pd.DataFrame({
+            "date": pd.date_range("2024-01-01", periods=3),
+            "open": [10, 11, 12],
+            "high": [11, 12, 13],
+            "low": [9, 10, 11],
+            "close": [10.5, 11.5, 12.5],
+            "volume": [100, 110, 120],
+        })
+
+        with TemporaryDirectory() as tmpdir, \
+             patch.object(data_provider, "CACHE_DIR", tmpdir), \
+             patch.object(data_provider, "_fetch_neodata_a_index_snapshot", return_value=pd.DataFrame()), \
+             patch.object(data_provider, "_ensure_bs_login") as ensure_login:
+            legacy_path = Path(tmpdir) / "benchmark_000300_20240101_20240103.csv"
+            legacy.to_csv(legacy_path, index=False)
+
+            result = data_provider.get_benchmark_prices("000300", "20240101", "20240103")
+
+            self.assertEqual(len(result), 3)
+            self.assertListEqual(result["close"].tolist(), [10.5, 11.5, 12.5])
+            self.assertTrue((Path(tmpdir) / "benchmarks" / "000300.csv").exists())
+            ensure_login.assert_not_called()
 
 
 if __name__ == "__main__":

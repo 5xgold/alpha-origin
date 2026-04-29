@@ -125,7 +125,6 @@ do_risk() {
 
     step "风控检查"
     python3 "$RC_DIR/scripts/risk_report.py" \
-        --portfolio "$RC_DIR/data/portfolio.csv" \
         $equity_args
 
     info "风控报告: output/"

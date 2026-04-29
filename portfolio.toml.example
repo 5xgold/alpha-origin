@@ -5,9 +5,7 @@
 [account]
 total_equity = 500000       # 总资产（元）
 total_market_value = 350000 # 总市值（元）
-available_cash = 150000     # 可用现金（元）
-floating_pnl = 0.0          # 浮动盈亏（元）
-daily_pnl = 0.0             # 当日盈亏（元）
+
 position_ratio = 0.70       # 仓位比例
 update_time = "2026-01-01 09:00"
 

@@ -297,9 +297,10 @@ def _read_cached_frame(cache_file):
     return pd.read_csv(cache_file, parse_dates=['date'])
 
 
-def _load_latest_matching_cache(pattern):
+def _load_latest_matching_cache(pattern, subdir=None):
     """按修改时间回退到最近一次可用缓存。"""
-    matches = sorted(Path(CACHE_DIR).glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)
+    search_dir = Path(CACHE_DIR) / subdir if subdir else Path(CACHE_DIR)
+    matches = sorted(search_dir.glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)
     for cache_file in matches:
         try:
             df = _read_cached_frame(cache_file)
@@ -582,10 +583,11 @@ def get_stock_prices(code, start_date, end_date, adjust="qfq"):
     if not is_hk:
         code_str = code_str.zfill(6)
 
-    # 缓存文件名包含复权方式
+    # 缓存文件名包含复权方式，存放在 stocks/ 子目录
     adjust_suffix = adjust if adjust else "raw"
-    cache_file = Path(CACHE_DIR) / f"{code_str}_{start_date}_{end_date}_{adjust_suffix}.csv"
-    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    stocks_cache_dir = Path(CACHE_DIR) / "stocks"
+    stocks_cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_file = stocks_cache_dir / f"{code_str}_{start_date}_{end_date}_{adjust_suffix}.csv"
 
     if _cache_valid(cache_file, CACHE_EXPIRY_DAYS):
         cached_df = _read_cached_frame(cache_file)
@@ -611,9 +613,9 @@ def get_stock_prices(code, start_date, end_date, adjust="qfq"):
                 print(f"警告: 获取 {code_str} 实时行情失败，回退到已有缓存: {cache_file.name}")
                 return cached_df
 
-        fallback_df, fallback_file = _load_latest_matching_cache(f"{code_str}_*_*_{adjust_suffix}.csv")
+        fallback_df, fallback_file = _load_latest_matching_cache(f"{code_str}_*_*_{adjust_suffix}.csv", subdir="stocks")
         if fallback_df is None:
-            fallback_df, fallback_file = _load_latest_matching_cache(f"{code_str}_*_*_*.csv")
+            fallback_df, fallback_file = _load_latest_matching_cache(f"{code_str}_*_*_*.csv", subdir="stocks")
         if fallback_df is not None:
             print(f"警告: 获取 {code_str} 实时行情失败，回退到最近缓存: {fallback_file.name}")
             return fallback_df

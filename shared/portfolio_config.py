@@ -12,6 +12,52 @@ import pandas as pd
 sys.path.append(str(Path(__file__).parent.parent))
 
 
+def _load_toml(toml_path: str = None) -> dict:
+    """读取 portfolio.toml 并返回原始 dict"""
+    try:
+        import tomli
+    except ImportError:
+        try:
+            import tomllib as tomli
+        except ImportError:
+            raise ImportError(
+                "需要安装 tomli 库：pip install tomli\n"
+                "或使用 Python 3.11+ (内置 tomllib)"
+            )
+
+    if toml_path is None:
+        toml_path = Path(__file__).parent.parent / "portfolio.toml"
+    else:
+        toml_path = Path(toml_path)
+
+    if not toml_path.exists():
+        raise FileNotFoundError(
+            f"持仓配置文件不存在: {toml_path}\n"
+            f"请创建 portfolio.toml 文件，参考格式：\n"
+            f"[account]\n"
+            f"total_equity = 500000\n\n"
+            f"[[holdings]]\n"
+            f'code = "601216"\n'
+            f'name = "君正集团"\n'
+            f'market = "上海"\n'
+            f'quantity = 9100\n'
+            f'cost_price = 5.5243\n'
+        )
+
+    with open(toml_path, "rb") as f:
+        return tomli.load(f)
+
+
+def load_account_config(toml_path: str = None) -> dict:
+    """从 portfolio.toml 读取 [account] 段
+
+    Returns:
+        dict: {"total_equity": float, ...}，无 [account] 段则返回空 dict
+    """
+    data = _load_toml(toml_path)
+    return data.get("account", {})
+
+
 def load_portfolio_from_toml(toml_path: str = None) -> pd.DataFrame:
     """
     从 portfolio.toml 加载持仓配置
@@ -26,39 +72,7 @@ def load_portfolio_from_toml(toml_path: str = None) -> pd.DataFrame:
         FileNotFoundError: 如果 portfolio.toml 不存在
         ValueError: 如果 TOML 格式错误
     """
-    try:
-        import tomli
-    except ImportError:
-        # Python 3.11+ 内置 tomllib
-        try:
-            import tomllib as tomli
-        except ImportError:
-            raise ImportError(
-                "需要安装 tomli 库：pip install tomli\n"
-                "或使用 Python 3.11+ (内置 tomllib)"
-            )
-
-    # Default path: project root / portfolio.toml
-    if toml_path is None:
-        toml_path = Path(__file__).parent.parent / "portfolio.toml"
-    else:
-        toml_path = Path(toml_path)
-
-    if not toml_path.exists():
-        raise FileNotFoundError(
-            f"持仓配置文件不存在: {toml_path}\n"
-            f"请创建 portfolio.toml 文件，参考格式：\n"
-            f"[[holdings]]\n"
-            f'code = "601216"\n'
-            f'name = "君正集团"\n'
-            f'market = "上海"\n'
-            f'quantity = 9100\n'
-            f'cost_price = 5.5243\n'
-        )
-
-    # Read TOML
-    with open(toml_path, "rb") as f:
-        data = tomli.load(f)
+    data = _load_toml(toml_path)
 
     # Extract holdings
     if "holdings" not in data:

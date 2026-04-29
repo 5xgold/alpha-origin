@@ -107,24 +107,26 @@ do_attr() {
 # ── 风控检查 ──
 do_risk() {
     local equity="$1"
+    local equity_args=""
 
-    # 总权益：参数 > asset_summary.json
-    if [ -z "$equity" ]; then
+    # 总权益：参数 > asset_summary.json > portfolio.toml（由 Python 自动读取）
+    if [ -n "$equity" ]; then
+        equity_args="--equity $equity"
+    else
         local asset_json="$AA_DIR/data/asset_summary.json"
         if [ -f "$asset_json" ]; then
             equity=$(python3 -c "import json; print(json.load(open('$asset_json'))['total_assets'])")
             info "总权益（来自 PDF）: ¥$(printf "%'.0f" "${equity%.*}")"
+            equity_args="--equity $equity"
         else
-            error "无法获取总权益，请指定金额或先运行: ./quickstart.sh parse <PDF>"
+            info "总权益将从 portfolio.toml 读取"
         fi
     fi
-
-    [ ! -f "$RC_DIR/data/portfolio.csv" ] && error "未找到持仓文件，请先运行: ./quickstart.sh parse <PDF>"
 
     step "风控检查"
     python3 "$RC_DIR/scripts/risk_report.py" \
         --portfolio "$RC_DIR/data/portfolio.csv" \
-        --equity "$equity"
+        $equity_args
 
     info "风控报告: output/"
 }

@@ -13,7 +13,7 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from shared.data_provider import get_stock_prices, get_benchmark_prices, get_composite_benchmark_prices
-from shared.portfolio_config import sync_portfolio_to_csv
+from shared.portfolio_config import sync_portfolio_to_csv, load_account_config
 from shared.config import parse_benchmark_config
 from risk_control.config import (
     MARKET_INDEX, ATR_PERIOD, PORTFOLIO_LOOKBACK_DAYS, DATA_FREQ,
@@ -450,10 +450,21 @@ def run_risk_check(portfolio_path, total_equity):
 def main():
     parser = argparse.ArgumentParser(description="风控检查报告")
     parser.add_argument("--portfolio", required=True, help="持仓 CSV 路径")
-    parser.add_argument("--equity", type=float, required=True, help="总权益（含现金）")
+    parser.add_argument("--equity", type=float, default=None,
+                        help="总权益（含现金），不指定则从 portfolio.toml 读取")
     args = parser.parse_args()
 
-    run_risk_check(args.portfolio, args.equity)
+    equity = args.equity
+    if equity is None:
+        try:
+            account = load_account_config()
+            equity = account.get("total_equity")
+        except FileNotFoundError:
+            pass
+    if equity is None:
+        parser.error("未指定 --equity 且 portfolio.toml 中无 [account].total_equity")
+
+    run_risk_check(args.portfolio, equity)
 
 
 if __name__ == "__main__":

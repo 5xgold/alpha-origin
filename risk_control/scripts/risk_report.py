@@ -47,8 +47,8 @@ def _market_index_label(components):
     parts = []
     for c in components:
         name = _INDEX_NAMES.get(c["index"], c["index"])
-        parts.append(f"{name}{c['weight']:.0%}")
-    return "+".join(parts)
+        parts.append(f"{name} {c['weight']:.0%}")
+    return " + ".join(parts)
 
 
 def fetch_prices(portfolio_df, lookback_days=None):
@@ -307,13 +307,13 @@ def _generate_suggestions(pos_result, sl_levels, cb_result, anomaly_result):
     for v in pos_result["stock_violations"]:
         suggestions.append(
             f"减仓{v['name']}至{v['limit']:.0%}以下 "
-            f"(依据: 单股上限{v['limit']:.0%}，当前占{v.get('actual_pct', 'N/A')})"
+            f"(依据: 单股上限{v['limit']:.0%}，当前占{v['weight']:.0%})"
         )
 
     for v in pos_result["sector_violations"]:
         suggestions.append(
             f"减仓{v['sector']}板块至{v['limit']:.0%}以下 "
-            f"(依据: 板块上限{v['limit']:.0%}，当前占{v.get('actual_pct', 'N/A')})"
+            f"(依据: 板块上限{v['limit']:.0%}，当前占{v['weight']:.0%})"
         )
 
     # 止损建议

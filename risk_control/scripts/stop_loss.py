@@ -42,6 +42,8 @@ def calc_stop_take_levels(portfolio_df, prices_dict):
             "current_price": current,
             "quantity": qty,
             "stop_loss": None,
+            "atr": None,
+            "recent_high": None,
             "take_profit_tiers": [],
             "trailing_stop": None,
             "signal": "hold",
@@ -62,12 +64,12 @@ def calc_stop_take_levels(portfolio_df, prices_dict):
             continue
 
         atr = float(atr_series.iloc[-1])
+        info["atr"] = atr
 
         # 止损价 = 成本 - N×ATR
         if cost > 0:
             info["stop_loss"] = round(cost - STOP_LOSS_ATR_MULTIPLIER * atr, 3)
         else:
-            # 成本为0（如担保品划入），用当前价
             info["stop_loss"] = round(current - STOP_LOSS_ATR_MULTIPLIER * atr, 3)
 
         # 分批止盈
@@ -83,6 +85,7 @@ def calc_stop_take_levels(portfolio_df, prices_dict):
 
         # 移动止损 = 近期最高价 - N×ATR
         recent_high = float(df["high"].astype(float).iloc[-ATR_PERIOD:].max())
+        info["recent_high"] = recent_high
         info["trailing_stop"] = round(recent_high - TRAILING_STOP_ATR_MULTIPLIER * atr, 3)
 
         # 信号判定

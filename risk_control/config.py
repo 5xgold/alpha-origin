@@ -57,8 +57,13 @@ ALERT_ACTIONS = {
 DATA_FREQ = "daily"             # "daily" | "intraday" (Phase 2)
 MONITOR_INTERVAL = None         # None=单次运行 | 300=每5分钟 (Phase 2)
 
-# 沪深300代码（用于市场波动率计算）
-MARKET_INDEX = "000300"
+# 市场指数（用于波动率计算）
+# 支持单指数 str 或多指数 list[dict]，多指数会合成加权波动率
+MARKET_INDEX = [
+    {"index": "000001", "weight": 0.5},    # 上证指数
+    {"index": "000300", "weight": 0.3},    # 沪深300
+    {"index": "HK.800000", "weight": 0.2}, # 恒生指数
+]
 
 # 组合净值回溯天数
 PORTFOLIO_LOOKBACK_DAYS = 60

@@ -20,13 +20,14 @@ def _get_suggested_position(market_vol):
     return VOLATILITY_POSITION_BANDS[-1][1]
 
 
-def check_positions(portfolio_df, total_equity, market_vol):
+def check_positions(portfolio_df, total_equity, market_vol, market_index_name="沪深300"):
     """仓位管理检查
 
     Args:
         portfolio_df: DataFrame[code, name, market, quantity, cost_price, current_price, market_value]
         total_equity: 总权益（含现金）
-        market_vol: 沪深300年化波动率（%）
+        market_vol: 市场指数年化波动率（%）
+        market_index_name: 市场指数名称（用于报告显示）
 
     Returns:
         dict: {
@@ -35,6 +36,7 @@ def check_positions(portfolio_df, total_equity, market_vol):
             suggested_position: float,
             current_position: float,
             market_vol: float,
+            market_index_name: str,
             position_warning: bool,
         }
     """
@@ -44,6 +46,7 @@ def check_positions(portfolio_df, total_equity, market_vol):
         "suggested_position": _get_suggested_position(market_vol),
         "current_position": 0.0,
         "market_vol": market_vol,
+        "market_index_name": market_index_name,
         "position_warning": False,
     }
 
@@ -61,6 +64,7 @@ def check_positions(portfolio_df, total_equity, market_vol):
                 "code": row["code"],
                 "name": row["name"],
                 "weight": weight,
+                "actual_pct": weight,
                 "limit": MAX_SINGLE_STOCK_WEIGHT,
             })
 
@@ -79,6 +83,7 @@ def check_positions(portfolio_df, total_equity, market_vol):
             result["sector_violations"].append({
                 "sector": sector,
                 "weight": weight,
+                "actual_pct": weight,
                 "limit": MAX_SINGLE_SECTOR_WEIGHT,
                 "codes": info["codes"],
             })

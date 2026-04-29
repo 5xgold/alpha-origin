@@ -12,8 +12,9 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from shared.data_provider import get_stock_prices, get_benchmark_prices
+from shared.data_provider import get_stock_prices, get_benchmark_prices, get_composite_benchmark_prices
 from shared.portfolio_config import sync_portfolio_to_csv
+from shared.config import parse_benchmark_config
 from risk_control.config import (
     MARKET_INDEX, ATR_PERIOD, PORTFOLIO_LOOKBACK_DAYS, DATA_FREQ,
 )
@@ -35,12 +36,28 @@ def load_portfolio(csv_path):
     return df
 
 
+def _market_index_label(components):
+    """生成市场指数的显示名称"""
+    _INDEX_NAMES = {
+        "000001": "上证指数", "000300": "沪深300", "000905": "中证500",
+        "399001": "深证成指", "HK.800000": "恒生指数",
+    }
+    if len(components) == 1:
+        return _INDEX_NAMES.get(components[0]["index"], components[0]["index"])
+    parts = []
+    for c in components:
+        name = _INDEX_NAMES.get(c["index"], c["index"])
+        parts.append(f"{name}{c['weight']:.0%}")
+    return "+".join(parts)
+
+
 def fetch_prices(portfolio_df, lookback_days=None):
     """获取持仓股票 + 市场指数的历史行情
 
     Returns:
         prices_dict: {code: DataFrame[date, open, high, low, close, volume]}
-        market_prices: DataFrame (沪深300)
+        market_prices: DataFrame (市场指数)
+        market_index_name: str (指数组合名称)
     """
     if lookback_days is None:
         lookback_days = max(PORTFOLIO_LOOKBACK_DAYS, ATR_PERIOD * 3)
@@ -61,14 +78,19 @@ def fetch_prices(portfolio_df, lookback_days=None):
         except Exception as e:
             print(f"  警告: {code} 行情获取失败: {e}")
 
-    # 市场指数
+    # 市场指数（支持单指数或多指数合成）
+    components = parse_benchmark_config(MARKET_INDEX)
+    market_index_name = _market_index_label(components)
     market_prices = None
     try:
-        market_prices = get_benchmark_prices(MARKET_INDEX, start_date, end_date)
+        if len(components) == 1:
+            market_prices = get_benchmark_prices(components[0]["index"], start_date, end_date)
+        else:
+            market_prices = get_composite_benchmark_prices(components, start_date, end_date)
     except Exception as e:
-        print(f"  警告: 沪深300行情获取失败: {e}")
+        print(f"  警告: {market_index_name} 行情获取失败: {e}")
 
-    return prices_dict, market_prices
+    return prices_dict, market_prices, market_index_name
 
 
 def enrich_portfolio(portfolio_df, prices_dict):
@@ -158,7 +180,7 @@ def _fmt_money(v):
 def format_terminal_report(today, portfolio_df, total_equity, pos_result, sl_levels, cb_result, anomaly_result):
     """生成终端输出文本"""
     lines = []
-    w = 55
+    w = 72
 
     lines.append("═" * w)
     lines.append(f"{'风控检查报告 ' + today:^{w}}")
@@ -178,7 +200,7 @@ def format_terminal_report(today, portfolio_df, total_equity, pos_result, sl_lev
     # 第一道防线
     lines.append("")
     lines.append("🛡️ 第一道防线：仓位管理")
-    lines.append(f"  沪深300波动率: {pos_result['market_vol']:.1f}% → "
+    lines.append(f"  {pos_result['market_index_name']}波动率: {pos_result['market_vol']:.1f}% → "
                  f"建议仓位 ≤{pos_result['suggested_position']:.0%}")
 
     if pos_result["position_warning"]:
@@ -200,17 +222,21 @@ def format_terminal_report(today, portfolio_df, total_equity, pos_result, sl_lev
     lines.append("🎯 第二道防线：止损止盈")
 
     # 表头
-    header = f"  {'股票':<10} {'成本':>8} {'现价':>8} {'止损':>8} {'盈亏':>7} {'信号':<8}"
+    header = f"  {'股票':<10} {'成本':>8} {'现价':>8} {'止损':>8} {'ATR':>6} {'移动止':>8} {'盈亏':>7} {'信号':<6}"
     lines.append(header)
     lines.append("  " + "─" * (w - 4))
 
     for sl in sl_levels:
         signal_label = SIGNAL_LABELS.get(sl["signal"], sl["signal"])
+        atr_str = f"{sl.get('atr') or 0:.3f}".rjust(6) if sl.get("atr") else "N/A  ".rjust(6)
+        trail_str = _fmt_price(sl.get("trailing_stop")) if sl.get("trailing_stop") else "     —"
         lines.append(
             f"  {sl['name']:<10} "
             f"{_fmt_price(sl['cost_price'])} "
             f"{_fmt_price(sl['current_price'])} "
             f"{_fmt_price(sl['stop_loss'])} "
+            f"{atr_str} "
+            f"{trail_str} "
             f"{_fmt_pct(sl['pnl_pct'], 7)} "
             f"{signal_label}"
         )
@@ -266,42 +292,76 @@ def format_terminal_report(today, portfolio_df, total_equity, pos_result, sl_lev
 
 
 def _generate_suggestions(pos_result, sl_levels, cb_result, anomaly_result):
-    """根据检查结果生成操作建议"""
+    """根据检查结果生成操作建议（附带计算依据）"""
     suggestions = []
 
     # 仓位建议
     if pos_result["position_warning"]:
         diff = pos_result["current_position"] - pos_result["suggested_position"]
-        suggestions.append(f"减仓 {diff:.0%} 至建议仓位 {pos_result['suggested_position']:.0%} 以下")
+        mv = pos_result.get("market_vol", 0)
+        suggestions.append(
+            f"减仓 {diff:.0%} 至建议仓位 {pos_result['suggested_position']:.0%} 以下 "
+            f"(依据: {pos_result.get('market_index_name', '市场')}波动率={mv:.1f}% → 查表建议上限{pos_result['suggested_position']:.0%})"
+        )
 
     for v in pos_result["stock_violations"]:
-        suggestions.append(f"减仓{v['name']}至{v['limit']:.0%}以下")
+        suggestions.append(
+            f"减仓{v['name']}至{v['limit']:.0%}以下 "
+            f"(依据: 单股上限{v['limit']:.0%}，当前占{v.get('actual_pct', 'N/A')})"
+        )
 
     for v in pos_result["sector_violations"]:
-        suggestions.append(f"减仓{v['sector']}板块至{v['limit']:.0%}以下")
+        suggestions.append(
+            f"减仓{v['sector']}板块至{v['limit']:.0%}以下 "
+            f"(依据: 板块上限{v['limit']:.0%}，当前占{v.get('actual_pct', 'N/A')})"
+        )
 
     # 止损建议
     for sl in sl_levels:
         if sl["signal"] == "stop_loss":
-            suggestions.append(f"🔴 {sl['name']} 已触及止损价 {_fmt_price(sl['stop_loss']).strip()}，建议止损")
+            atr = sl.get("atr") or 0
+            suggestions.append(
+                f"🔴 {sl['name']}({sl['code']}) 已触及止损 "
+                f"(依据: 成本{sl['cost_price']:.3f} - 2×ATR{atr:.3f} = 止损价{sl['stop_loss']:.3f} → 现价{sl['current_price']:.3f} < 止损价)"
+            )
         elif sl["signal"] == "trailing_stop":
-            suggestions.append(f"🟠 {sl['name']} 触及移动止损 {_fmt_price(sl['trailing_stop']).strip()}，建议减仓")
+            atr = sl.get("atr") or 0
+            rh = sl.get("recent_high") or 0
+            suggestions.append(
+                f"🟠 {sl['name']}({sl['code']}) 触及移动止损 "
+                f"(依据: 近14日最高{rh:.3f} - 1.5×ATR{atr:.3f} = 触发价{sl['trailing_stop']:.3f} → 现价{sl['current_price']:.3f} ≤ 触发价)"
+            )
         elif sl["signal"] == "take_profit":
             triggered = [t for t in sl["take_profit_tiers"] if t["triggered"]]
             if triggered:
-                t = triggered[-1]
-                suggestions.append(f"🟡 {sl['name']} 盈利 {sl['pnl_pct']:.0%}，可分批止盈")
+                tiers_str = ", ".join(
+                    f"+{t['trigger_pct']:.0%}触发卖出{int(t['sell_ratio']*100)}%"
+                    for t in triggered
+                )
+                base = sl["cost_price"] if sl["cost_price"] > 0 else sl["current_price"]
+                suggestions.append(
+                    f"🟡 {sl['name']}({sl['code']}) 盈利 {sl['pnl_pct']:.1%}，建议分批止盈 "
+                    f"(依据: 触发{tiers_str}，基准价{base:.3f})"
+                )
 
     # 熔断建议
     if cb_result["action"]:
-        suggestions.append(f"组合熔断触发，{ACTION_LABELS.get(cb_result['action'], cb_result['action'])}")
+        cb_info = ", ".join(
+            f"{p}{cb_result[p]['drawdown']:+.1%}"
+            for p in ["daily", "weekly", "monthly"]
+            if cb_result[p]["triggered"]
+        )
+        suggestions.append(
+            f"组合熔断触发 ({cb_info})，"
+            f"{ACTION_LABELS.get(cb_result['action'], cb_result['action'])}"
+        )
 
     # 异常建议
     for sig in anomaly_result["signals"]:
         if sig["type"] == "vol_spike":
-            suggestions.append(f"关注{sig['code']}波动率异常")
+            suggestions.append(f"关注{sig['code']}波动率异常 ({sig['detail']})")
         elif sig["type"] == "liquidity_dry":
-            suggestions.append(f"关注{sig['code']}流动性风险")
+            suggestions.append(f"关注{sig['code']}流动性风险 ({sig['detail']})")
 
     return suggestions
 
@@ -337,8 +397,9 @@ def run_risk_check(portfolio_path, total_equity):
 
     # 2. 获取行情
     print("获取行情数据...")
-    prices_dict, market_prices = fetch_prices(portfolio_df)
+    prices_dict, market_prices, market_index_name = fetch_prices(portfolio_df)
     print(f"  获取到 {len(prices_dict)} 只股票行情")
+    print(f"  市场指数: {market_index_name}")
 
     # 3. 丰富持仓数据
     portfolio_df = enrich_portfolio(portfolio_df, prices_dict)
@@ -348,11 +409,11 @@ def run_risk_check(portfolio_path, total_equity):
     market_vol = 0.0
     if market_prices is not None and not market_prices.empty:
         market_vol = calc_realized_vol(market_prices, window=20)
-    print(f"  沪深300波动率: {market_vol:.1f}%")
+    print(f"  {market_index_name} 波动率: {market_vol:.1f}%")
 
     # 5. 第一道防线
     print("检查仓位...")
-    pos_result = check_positions(portfolio_df, total_equity, market_vol)
+    pos_result = check_positions(portfolio_df, total_equity, market_vol, market_index_name)
 
     # 6. 第二道防线
     print("计算止损止盈...")

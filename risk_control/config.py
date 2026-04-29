@@ -4,8 +4,39 @@
 # 第一道防线：仓位管理
 # ═══════════════════════════════════════════
 
-MAX_SINGLE_STOCK_WEIGHT = 0.15      # 单只股票最大仓位
 MAX_SINGLE_SECTOR_WEIGHT = 0.30     # 单行业最大仓位
+
+# 个股仓位上限 — 基于熟悉程度评估
+# 四维度: business_model / shareholder_friendly / valuation_low / trend_up
+# 通过维度数量映射到仓位上限等级
+FAMILIARITY_DIMENSIONS = [
+    "business_model",        # 商业模式是否优秀
+    "shareholder_friendly",  # 对中小投资者态度是否友好
+    "valuation_low",         # 当前估值是否处于历史低位/合理区间
+    "trend_up",              # 技术趋势是否处于底部或上升趋势
+]
+
+FAMILIARITY_POSITION_TIERS = {
+    "low":       0.12,   # 0-1 维度通过 → 不熟悉，保守持仓
+    "medium":    0.15,   # 2 维度通过 → 一般了解
+    "high":      0.18,   # 3 维度通过 → 较熟悉
+    "very_high": 0.22,   # 4 维度全通过 → 非常熟悉
+}
+
+FAMILIARITY_LEVEL_LABELS = {
+    "low": "低", "medium": "中", "high": "高", "very_high": "极高",
+}
+
+
+def get_familiarity_level(true_count: int) -> str:
+    """维度通过数 → 熟悉程度等级"""
+    if true_count <= 1:
+        return "low"
+    elif true_count == 2:
+        return "medium"
+    elif true_count == 3:
+        return "high"
+    return "very_high"
 
 # 波动率-仓位对照表：(波动率上限%, 建议最大仓位)
 # A股没有 VIX，用沪深300的20日实现波动率年化值替代

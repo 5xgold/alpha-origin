@@ -17,6 +17,7 @@ from shared.portfolio_config import load_account_config, load_portfolio_from_tom
 from shared.config import parse_benchmark_config
 from risk_control.config import (
     MARKET_INDEX, ATR_PERIOD, PORTFOLIO_LOOKBACK_DAYS, DATA_FREQ,
+    FAMILIARITY_DIMENSIONS, FAMILIARITY_LEVEL_LABELS,
 )
 from risk_control.scripts.risk_calc import calc_realized_vol
 from risk_control.scripts.position_check import check_positions
@@ -204,7 +205,9 @@ def format_terminal_report(today, portfolio_df, total_equity, pos_result, sl_lev
                      f"超出建议 {pos_result['suggested_position']:.0%}")
 
     for v in pos_result["stock_violations"]:
-        lines.append(f"  ⚠️ {v['name']} 占比 {v['weight']:.0%} > {v['limit']:.0%} 上限")
+        level = v.get("familiarity_level", "low")
+        tag = FAMILIARITY_LEVEL_LABELS.get(level, "低") + "熟悉"
+        lines.append(f"  ⚠️ {v['name']} 占比 {v['weight']:.0%} > {tag}上限 {v['limit']:.0%}")
 
     for v in pos_result["sector_violations"]:
         names = "、".join(v["codes"])
@@ -212,6 +215,17 @@ def format_terminal_report(today, portfolio_df, total_equity, pos_result, sl_lev
 
     if not pos_result["position_warning"] and not pos_result["stock_violations"] and not pos_result["sector_violations"]:
         lines.append("  ✅ 仓位正常")
+
+    # 熟悉程度概览
+    lines.append("")
+    lines.append("  个股熟悉程度评估:")
+    lines.append(f"  {'股票':<12} {'商模':>4} {'股东':>4} {'估值':>4} {'趋势':>4}  {'等级':>4} {'上限':>4}")
+    lines.append("  " + "─" * 48)
+    for sf in pos_result.get("stock_familiarity", []):
+        detail = sf["detail"] if isinstance(sf["detail"], dict) else {}
+        marks = [("✓" if detail.get(d, False) else "✗") for d in FAMILIARITY_DIMENSIONS]
+        label = FAMILIARITY_LEVEL_LABELS[sf["level"]]
+        lines.append(f"  {sf['name']:<12} {marks[0]:>4} {marks[1]:>4} {marks[2]:>4} {marks[3]:>4}  {label:>4} {sf['limit']:>4.0%}")
 
     # 第二道防线
     lines.append("")
@@ -301,9 +315,11 @@ def _generate_suggestions(pos_result, sl_levels, cb_result, anomaly_result):
         )
 
     for v in pos_result["stock_violations"]:
+        level = v.get("familiarity_level", "low")
+        tag = FAMILIARITY_LEVEL_LABELS.get(level, "低") + "熟悉"
         suggestions.append(
             f"减仓{v['name']}至{v['limit']:.0%}以下 "
-            f"(依据: 单股上限{v['limit']:.0%}，当前占{v['weight']:.0%})"
+            f"(依据: {tag}上限{v['limit']:.0%}，当前占{v['weight']:.0%})"
         )
 
     for v in pos_result["sector_violations"]:

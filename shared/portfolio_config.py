@@ -66,7 +66,7 @@ def load_portfolio_from_toml(toml_path: str = None) -> pd.DataFrame:
         toml_path: TOML 文件路径，默认为项目根目录的 portfolio.toml
 
     Returns:
-        DataFrame with columns: code, name, market, quantity, cost_price
+        DataFrame with columns: code, name, market, quantity, cost_price, familiarity_detail
 
     Raises:
         FileNotFoundError: 如果 portfolio.toml 不存在
@@ -98,7 +98,20 @@ def load_portfolio_from_toml(toml_path: str = None) -> pd.DataFrame:
     df["quantity"] = pd.to_numeric(df["quantity"])
     df["cost_price"] = pd.to_numeric(df["cost_price"])
 
-    return df[["code", "name", "market", "quantity", "cost_price"]]
+    # 解析熟悉程度评估（familiarity dict），向后兼容 conviction
+    familiarity_details = []
+    for h in holdings:
+        fam = h.get("familiarity", {})
+        if not fam and h.get("conviction", False):
+            # conviction = true 向后兼容 → 视为四维度全通过
+            fam = {d: True for d in [
+                "business_model", "shareholder_friendly",
+                "valuation_low", "trend_up",
+            ]}
+        familiarity_details.append(fam)
+    df["familiarity_detail"] = familiarity_details
+
+    return df[["code", "name", "market", "quantity", "cost_price", "familiarity_detail"]]
 
 
 def sync_portfolio_to_csv(toml_path: str = None, csv_path: str = None):
@@ -110,14 +123,15 @@ def sync_portfolio_to_csv(toml_path: str = None, csv_path: str = None):
         csv_path: CSV 输出路径，默认为 risk_control/data/portfolio.csv
     """
     df = load_portfolio_from_toml(toml_path)
-
+    # familiarity_detail 是 dict 列，CSV 不支持，导出时去掉
+    export_df = df.drop(columns=["familiarity_detail"], errors="ignore")
     if csv_path is None:
         csv_path = Path(__file__).parent.parent / "risk_control" / "data" / "portfolio.csv"
     else:
         csv_path = Path(csv_path)
 
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    export_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
     print(f"✅ 持仓数据已同步到: {csv_path}")
     print(f"   共 {len(df)} 只股票")
 

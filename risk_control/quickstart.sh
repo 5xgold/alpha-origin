@@ -18,7 +18,7 @@ info()  { echo -e "${GREEN}[✓]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 
-EQUITY="${1:-500000}"
+EQUITY="${1:-}"
 
 echo "=========================================="
 echo "  风控检查 - 快速启动"
@@ -66,13 +66,20 @@ else
     info "持仓文件: $ROOT_DIR/portfolio.toml"
 fi
 
-info "总权益: ¥$(printf "%'.0f" "$EQUITY")"
+if [ -n "$EQUITY" ]; then
+    info "总权益: ¥$(printf "%'.0f" "$EQUITY") (命令行指定)"
+else
+    info "总权益: 从 portfolio.toml 读取"
+fi
 echo ""
 
 # ── 运行风控检查 ──
 cd "$ROOT_DIR"
-python3 risk_control/scripts/risk_report.py \
-    --equity "$EQUITY"
+if [ -n "$EQUITY" ]; then
+    python3 risk_control/scripts/risk_report.py --equity "$EQUITY"
+else
+    python3 risk_control/scripts/risk_report.py
+fi
 
 echo ""
 echo "=========================================="

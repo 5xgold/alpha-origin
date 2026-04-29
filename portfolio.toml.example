@@ -14,6 +14,12 @@ update_time = "2026-01-01 09:00" # (可选) 更新时间，仅供记录
 # - market: 市场（上海/深圳/沪港通/深港通）
 # - quantity: 持仓数量（股）
 # - cost_price: 成本价（元）
+# - familiarity: (可选) 熟悉程度评估，影响个股仓位上限
+#     business_model = true       商业模式优秀
+#     shareholder_friendly = true 对中小投资者态度友好
+#     valuation_low = true        当前估值处于历史低位/合理区间
+#     trend_up = true             技术趋势处于底部或上升趋势
+#   通过维度数: 0-1→12%, 2→15%, 3→18%, 4→22%  未填默认12%
 
 # 使用方法：
 # 1. 运行 ./scripts/init_project.sh 自动生成配置文件
@@ -26,6 +32,7 @@ name = "贵州茅台"
 market = "上海"
 quantity = 100
 cost_price = 1800.0
+familiarity = {business_model = true, shareholder_friendly = true, valuation_low = false, trend_up = true}
 
 [[holdings]]
 code = "000001"
@@ -40,6 +47,7 @@ name = "腾讯控股"
 market = "沪港通"
 quantity = 100
 cost_price = 350.0
+familiarity = {business_model = true, shareholder_friendly = true, valuation_low = true, trend_up = true}
 
 [[holdings]]
 code = "159792"

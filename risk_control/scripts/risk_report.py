@@ -6,9 +6,11 @@ Usage:
 
 import sys
 import argparse
+import json
 from pathlib import Path
 from datetime import datetime, timedelta
 
+import numpy as np
 import pandas as pd
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
@@ -404,27 +406,31 @@ def format_md_report(today, terminal_text):
     return f"# 风控检查报告 {today}\n\n```\n{terminal_text}\n```\n"
 
 
+def _json_default(value):
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, (np.integer, np.floating, np.bool_)):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if pd.isna(value):
+        return None
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 # ═══════════════════════════════════════════
 # 主流程
 # ═══════════════════════════════════════════
 
-def run_risk_check(total_equity):
-    """执行完整风控检查"""
+def build_risk_snapshot(total_equity):
+    """执行完整风控检查并返回结构化快照"""
     today = datetime.now().strftime("%Y-%m-%d")
-    print(f"风控检查 {today}")
-    print(f"数据频率: {DATA_FREQ}")
-    print()
 
     # 1. 加载持仓
-    print("加载持仓...")
     portfolio_df = load_portfolio_from_toml(str(DEFAULT_PORTFOLIO_TOML))
-    print(f"  {len(portfolio_df)} 只持仓")
 
     # 2. 获取行情
-    print("获取行情数据...")
     prices_dict, market_prices, market_index_name = fetch_prices(portfolio_df)
-    print(f"  获取到 {len(prices_dict)} 只股票行情")
-    print(f"  市场指数: {market_index_name}")
 
     # 3. 丰富持仓数据
     portfolio_df = enrich_portfolio(portfolio_df, prices_dict)
@@ -434,23 +440,18 @@ def run_risk_check(total_equity):
     market_vol = 0.0
     if market_prices is not None and not market_prices.empty:
         market_vol = calc_realized_vol(market_prices, window=20)
-    print(f"  {market_index_name} 波动率: {market_vol:.1f}%")
 
     # 5. 第一道防线
-    print("检查仓位...")
     pos_result = check_positions(portfolio_df, total_equity, market_vol, market_index_name)
 
     # 6. 第二道防线
-    print("计算止损止盈...")
     sl_levels = calc_stop_take_levels(portfolio_df, prices_dict)
     cb_result = check_circuit_breaker(portfolio_df, prices_dict)
 
     # 7. 第三道防线
-    print("检测异常信号...")
     anomaly_result = detect_anomalies(portfolio_df, prices_dict)
 
     # 8. 信号系统
-    print("运行信号策略...")
     sig_state = load_state()
     clear_stale_signals(sig_state, portfolio_df["code"].astype(str).tolist())
     signal_results = run_all_signals(
@@ -467,26 +468,28 @@ def run_risk_check(total_equity):
     clear_inactive_signal_records(sig_state, active_signal_keys)
     alert_groups = classify_alerts(signal_results)
     save_state(sig_state)
-    signal_count = len(signal_results)
-    print(f"  {signal_count} 条信号")
 
-    # 9. 输出报告
-    print()
-    report_text = format_terminal_report(
-        today, portfolio_df, total_equity,
-        pos_result, sl_levels, cb_result, anomaly_result,
-        alert_groups=alert_groups,
-    )
-    print(report_text)
-
-    # 10. 保存 Markdown
-    output_dir = Path(__file__).parent.parent.parent / "output"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    md_path = output_dir / f"risk_report_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
-    md_path.write_text(format_md_report(today, report_text), encoding="utf-8")
-    print(f"\n报告已保存: {md_path}")
+    total_mv = float(portfolio_df["market_value"].sum())
+    cash = float(total_equity - total_mv)
 
     return {
+        "today": today,
+        "data_freq": DATA_FREQ,
+        "total_equity": float(total_equity),
+        "portfolio_summary": {
+            "holding_count": int(len(portfolio_df)),
+            "total_market_value": total_mv,
+            "cash": cash,
+            "current_position": float(pos_result["current_position"]),
+        },
+        "market": {
+            "index_name": market_index_name,
+            "volatility": float(market_vol),
+            "regime": get_regime_params(),
+            "prices": market_prices.copy() if market_prices is not None else pd.DataFrame(),
+        },
+        "portfolio_df": portfolio_df.copy(),
+        "prices_dict": prices_dict,
         "position": pos_result,
         "stop_loss": sl_levels,
         "circuit_breaker": cb_result,
@@ -494,6 +497,75 @@ def run_risk_check(total_equity):
         "signals": signal_results,
         "alert_groups": alert_groups,
     }
+
+
+def export_risk_snapshot(snapshot, output_path):
+    """导出不含 DataFrame 的风险快照 JSON，供其他模块复用"""
+    payload = {
+        "today": snapshot["today"],
+        "data_freq": snapshot["data_freq"],
+        "total_equity": snapshot["total_equity"],
+        "portfolio_summary": snapshot["portfolio_summary"],
+        "market": {
+            "index_name": snapshot["market"]["index_name"],
+            "volatility": snapshot["market"]["volatility"],
+            "regime": snapshot["market"]["regime"],
+            "prices": snapshot["market"]["prices"].to_dict(orient="records"),
+        },
+        "portfolio": snapshot["portfolio_df"].to_dict(orient="records"),
+        "position": snapshot["position"],
+        "stop_loss": snapshot["stop_loss"],
+        "circuit_breaker": snapshot["circuit_breaker"],
+        "anomaly": snapshot["anomaly"],
+        "signals": snapshot["signals"],
+        "alert_groups": snapshot["alert_groups"],
+    }
+    output_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default),
+        encoding="utf-8",
+    )
+
+
+def run_risk_check(total_equity):
+    """执行完整风控检查"""
+    snapshot = build_risk_snapshot(total_equity)
+    today = snapshot["today"]
+    print(f"风控检查 {today}")
+    print(f"数据频率: {snapshot['data_freq']}")
+    print()
+    print("加载持仓...")
+    print(f"  {snapshot['portfolio_summary']['holding_count']} 只持仓")
+    print("获取行情数据...")
+    print(f"  获取到 {len(snapshot['prices_dict'])} 只股票行情")
+    print(f"  市场指数: {snapshot['market']['index_name']}")
+    print(f"  {snapshot['market']['index_name']} 波动率: {snapshot['market']['volatility']:.1f}%")
+    print("检查仓位...")
+    print("计算止损止盈...")
+    print("检测异常信号...")
+    print("运行信号策略...")
+    print(f"  {len(snapshot['signals'])} 条信号")
+
+    # 9. 输出报告
+    print()
+    report_text = format_terminal_report(
+        today, snapshot["portfolio_df"], total_equity,
+        snapshot["position"], snapshot["stop_loss"],
+        snapshot["circuit_breaker"], snapshot["anomaly"],
+        alert_groups=snapshot["alert_groups"],
+    )
+    print(report_text)
+
+    # 10. 保存 Markdown
+    output_dir = Path(__file__).parent.parent.parent / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime('%Y%m%d_%H%M')
+    md_path = output_dir / f"risk_report_{ts}.md"
+    md_path.write_text(format_md_report(today, report_text), encoding="utf-8")
+    json_path = output_dir / f"risk_snapshot_{ts}.json"
+    export_risk_snapshot(snapshot, json_path)
+    print(f"\n报告已保存: {md_path}")
+    print(f"快照已保存: {json_path}")
+    return snapshot
 
 
 def main():

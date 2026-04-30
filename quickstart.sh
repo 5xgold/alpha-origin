@@ -35,6 +35,8 @@ usage() {
     echo "  ./quickstart.sh attr [开始日期] [结束日期]"
     echo "  ./quickstart.sh risk [总权益]"
     echo "  ./quickstart.sh review [股票代码]          # 交易复盘"
+    echo "  ./quickstart.sh daily-review [总权益] [日期]  # 每日复盘"
+    echo "  ./quickstart.sh daily-pack [总权益] [日期]    # 每日复盘 + 图表"
     echo "  ./quickstart.sh earnings <PDF> <股票代码>  # 财报摘要"
     echo "  ./quickstart.sh sync-portfolio            # 同步 portfolio.toml → CSV"
     echo "  ./quickstart.sh pattern <command> [args]  # 形态检索"
@@ -139,6 +141,28 @@ do_review() {
     python3 "$ROOT_DIR/llm_digest/scripts/trade_review.py" $args
 }
 
+# ── 每日复盘 ──
+do_daily_review() {
+    local equity="$1"
+    local date="$2"
+    step "每日复盘"
+    local args=""
+    [ -n "$equity" ] && args="--equity $equity"
+    [ -n "$date" ] && args="$args --date $date"
+    python3 "$ROOT_DIR/llm_digest/scripts/daily_review.py" $args
+}
+
+# ── 每日复盘打包 ──
+do_daily_pack() {
+    local equity="$1"
+    local date="$2"
+    do_daily_review "$equity" "$date"
+    step "复盘图表"
+    local chart_args=""
+    [ -n "$date" ] && chart_args="--date $date"
+    python3 "$ROOT_DIR/scripts/gen_review_charts.py" $chart_args
+}
+
 # ── 财报摘要 ──
 do_earnings() {
     local pdf="$1"
@@ -199,6 +223,12 @@ case "$CMD" in
         ;;
     review)
         do_review "$1"
+        ;;
+    daily-review)
+        do_daily_review "$1" "$2"
+        ;;
+    daily-pack)
+        do_daily_pack "$1" "$2"
         ;;
     earnings)
         do_earnings "$1" "$2"

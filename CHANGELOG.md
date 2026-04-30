@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.7.1 - 2026-04-30
+
+### feat(llm-digest): 新增每日复盘流程
+
+- 新增 `llm_digest/scripts/daily_review.py`：按”新闻→大盘→热点→持仓→次日计划”模板生成每日复盘（选股环节暂由手动执行，不纳入自动流程）
+- LLM 调用改为可选：始终输出渲染好的 prompt 文件（`*_prompt.md`），LLM 不可用时自动跳过，支持喂给任意大模型 agent
+- 修复 `risk_report.py` JSON 序列化不支持 `numpy.bool_` 的问题
+- 新增 `llm_digest/prompts/daily_review.md`：输出结构贴合晚间复盘和第二天交易计划
+- `risk_report.py` 抽出 `build_risk_snapshot()`，并导出 `risk_snapshot_*.json` 供复盘/图表复用
+- 每日复盘接入：
+  - 东方财富快讯（新闻/政策/风向）
+  - 申万行业近 5/20 日强度（热点/持续性）
+  - 今日成交汇总（净买入/净卖出/调仓）
+  - 当前持仓与风控信号（持仓关键点/观察列表）
+- `quickstart.sh` / `llm_digest/quickstart.sh` 新增 `daily-review` 命令
+- 新增 `daily-pack` 命令：一键生成每日复盘 + 图表
+- 新增 `llm_digest/tests/test_daily_review.py` 回归测试，覆盖今日成交汇总口径
+
 ## v0.7.0 - 2026-04-29
 
 ### feat(risk): 信号插件系统 + 分级预警 + 多空区间

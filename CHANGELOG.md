@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.8.0 - 2026-04-30
+
+### refactor: 删除 llm_digest 模块，新增数据访问层
+
+- **删除 `llm_digest/` 整个模块**：包括脚本（daily_review / trade_review / earnings_summary）、prompt 模板、配置、测试
+- 移除 `openai` 依赖
+- 新增 `shared/store.py` 数据访问层：统一内部数据读写接口，模块间不再直接读文件路径
+  - `get_trades()` / `get_today_trades()` — 交易记录
+  - `get_portfolio()` / `get_account()` — 持仓与账户
+  - `get_attribution_report()` / `get_risk_signals_for()` — 报告读取
+  - `save_output()` / `save_risk_snapshot()` — 统一输出
+
 ## v0.7.1 - 2026-04-30
 
 ### feat(llm-digest): 新增每日复盘流程

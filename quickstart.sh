@@ -149,7 +149,7 @@ do_daily_review() {
     local args=""
     [ -n "$equity" ] && args="--equity $equity"
     [ -n "$date" ] && args="$args --date $date"
-    python3 "$ROOT_DIR/llm_digest/scripts/daily_review.py" $args
+    python3 "$ROOT_DIR/scripts/daily_review.py" $args
 }
 
 # ── 每日复盘打包 ──

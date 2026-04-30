@@ -81,27 +81,22 @@ def _neo_cached_fetch(code_str: str, start_date: str, end_date: str,
     if not cached.empty:
         cached_min = cached["date"].min()
         cached_max = cached["date"].max()
-        # 缓存完全覆盖请求范围 → 直接返回切片
         if cached_min <= sd and cached_max >= ed:
             sliced = cached[(cached["date"] >= sd) & (cached["date"] <= ed)].reset_index(drop=True)
             if not sliced.empty:
                 return sliced
-        # 今天的数据可能还没收盘，允许重新拉取当天
         today = pd.to_datetime(datetime.now().strftime("%Y-%m-%d"))
         if cached_max >= ed and cached_max < today:
             sliced = cached[(cached["date"] >= sd) & (cached["date"] <= ed)].reset_index(drop=True)
             if not sliced.empty:
                 return sliced
 
-    # 缓存不够，调 API
     df = fetch_fn()
     if df is not None and not df.empty:
         _neo_save_cache(df, code_str, market)
-        # 从合并后的缓存中切片返回
         full = _neo_load_cache(code_str, market)
         return full[(full["date"] >= sd) & (full["date"] <= ed)].reset_index(drop=True)
 
-    # API 也没数据，但缓存有部分数据可用
     if not cached.empty:
         sliced = cached[(cached["date"] >= sd) & (cached["date"] <= ed)].reset_index(drop=True)
         if not sliced.empty:
@@ -124,33 +119,28 @@ def _call_neodata(query: str) -> dict:
 
 
 def _neo_parse_kline(content: str) -> pd.DataFrame:
-    """解析 NeoData 股票历史走势表格 → DataFrame[date,open,high,low,close,volume]
-    列顺序: 日期,开盘价,收盘价,涨跌幅,成交量(含逗号),成交额(含逗号),最高价,最低价,换手率
-    """
+    """解析 NeoData 股票历史走势表格 → DataFrame[date,open,high,low,close,volume]"""
     rows = []
     for line in content.splitlines():
         line = line.strip()
         if not line.startswith("|"):
             continue
         parts = [p.strip() for p in line.split("|")]
-        parts = [p for p in parts if p]  # 去掉空字符串
-        # 数据行: len==9 且首列是日期
+        parts = [p for p in parts if p]
         if len(parts) == 9 and parts[0].startswith("20"):
             date_str = parts[0]
             try:
-                open_p  = float(parts[1])
+                open_p = float(parts[1])
                 close_p = float(parts[2])
-                # 成交量第5列(含逗号如'82,222,200')
-                vol     = int(parts[4].replace(",", "").replace(".00",""))
-                # 最高/最低在第7、8列
-                high_p  = float(parts[6]) if parts[6] else close_p
-                low_p   = float(parts[7]) if parts[7] else close_p
+                vol = int(parts[4].replace(",", "").replace(".00", ""))
+                high_p = float(parts[6]) if parts[6] else close_p
+                low_p = float(parts[7]) if parts[7] else close_p
             except ValueError:
-                continue  # 跳过"未开盘"等行
+                continue
             rows.append({"date": date_str, "open": open_p, "high": high_p,
                         "low": low_p, "close": close_p, "volume": vol})
     if not rows:
-        return pd.DataFrame(columns=["date","open","high","low","close","volume"])
+        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
     df = pd.DataFrame(rows)
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date"])
@@ -172,18 +162,17 @@ def _neo_parse_etf_kline(content: str) -> pd.DataFrame:
             if len(parts) >= 6 and parts[-1].startswith("20"):
                 date_str = parts[-1]
                 try:
-                    open_p  = float(parts[0])
+                    open_p = float(parts[0])
                     close_p = float(parts[1])
-                    high_p  = float(parts[2]) if parts[2] else close_p
-                    low_p   = float(parts[3]) if parts[3] else close_p
-                    vol_str = parts[4]
-                    vol     = int(float(vol_str.replace(",", "").replace(".00", "")))
+                    high_p = float(parts[2]) if parts[2] else close_p
+                    low_p = float(parts[3]) if parts[3] else close_p
+                    vol = int(float(parts[4].replace(",", "").replace(".00", "")))
                 except ValueError:
                     continue
                 rows.append({"date": date_str, "open": open_p, "high": high_p,
                             "low": low_p, "close": close_p, "volume": vol})
     if not rows:
-        return pd.DataFrame(columns=["date","open","high","low","close","volume"])
+        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
     df = pd.DataFrame(rows)
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date"])

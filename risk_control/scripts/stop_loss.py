@@ -39,6 +39,13 @@ def calc_stop_take_levels(portfolio_df, prices_dict):
         cost = float(row["cost_price"])
         current = float(row["current_price"])
         qty = float(row["quantity"])
+        risk_rules = row.get("risk_rules", {})
+        if not isinstance(risk_rules, dict):
+            risk_rules = {}
+
+        row_sl_mult = float(risk_rules.get("stop_loss_atr_multiplier", sl_mult) or sl_mult)
+        row_trail_mult = float(risk_rules.get("trailing_stop_atr_multiplier", trail_mult) or trail_mult)
+        row_tp_tiers = _resolve_take_profit_tiers(risk_rules, cost if cost > 0 else current, tp_mult)
 
         info = {
             "code": code,
@@ -53,9 +60,10 @@ def calc_stop_take_levels(portfolio_df, prices_dict):
             "trailing_stop": None,
             "signal": "hold",
             "pnl_pct": 0.0,
-            "stop_loss_atr_multiplier": sl_mult,
-            "trailing_stop_atr_multiplier": trail_mult,
+            "stop_loss_atr_multiplier": row_sl_mult,
+            "trailing_stop_atr_multiplier": row_trail_mult,
             "take_profit_multiplier": tp_mult,
+            "risk_rules": risk_rules,
         }
 
         if cost > 0:
@@ -76,17 +84,15 @@ def calc_stop_take_levels(portfolio_df, prices_dict):
 
         # 止损价 = 成本 - N×ATR（受市场区间调节）
         if cost > 0:
-            info["stop_loss"] = round(cost - sl_mult * atr, 3)
+            info["stop_loss"] = round(cost - row_sl_mult * atr, 3)
         else:
-            info["stop_loss"] = round(current - sl_mult * atr, 3)
+            info["stop_loss"] = round(current - row_sl_mult * atr, 3)
 
         # 分批止盈（止盈目标受市场区间调节）
-        base = cost if cost > 0 else current
-        for pct, ratio in TAKE_PROFIT_TIERS:
-            adjusted_pct = pct * tp_mult
-            tp_price = round(base * (1 + adjusted_pct), 3)
+        for pct, ratio in row_tp_tiers:
+            tp_price = round((cost if cost > 0 else current) * (1 + pct), 3)
             info["take_profit_tiers"].append({
-                "trigger_pct": adjusted_pct,
+                "trigger_pct": pct,
                 "price": tp_price,
                 "sell_ratio": ratio,
                 "triggered": current >= tp_price,
@@ -95,7 +101,7 @@ def calc_stop_take_levels(portfolio_df, prices_dict):
         # 移动止损 = 近期最高价 - N×ATR（受市场区间调节）
         recent_high = float(df["high"].astype(float).iloc[-ATR_PERIOD:].max())
         info["recent_high"] = recent_high
-        info["trailing_stop"] = round(recent_high - trail_mult * atr, 3)
+        info["trailing_stop"] = round(recent_high - row_trail_mult * atr, 3)
 
         # 信号判定
         if current <= info["stop_loss"]:
@@ -110,6 +116,24 @@ def calc_stop_take_levels(portfolio_df, prices_dict):
         results.append(info)
 
     return results
+
+
+def _resolve_take_profit_tiers(risk_rules, base_price, tp_mult):
+    custom = risk_rules.get("take_profit_tiers", [])
+    if isinstance(custom, list) and custom:
+        tiers = []
+        for item in custom:
+            if not isinstance(item, dict):
+                continue
+            trigger_pct = item.get("trigger_pct")
+            sell_ratio = item.get("sell_ratio")
+            if trigger_pct is None or sell_ratio is None:
+                continue
+            tiers.append((float(trigger_pct), float(sell_ratio)))
+        if tiers:
+            return tiers
+
+    return [(pct * tp_mult, ratio) for pct, ratio in TAKE_PROFIT_TIERS]
 
 
 def check_circuit_breaker(portfolio_df, prices_dict):

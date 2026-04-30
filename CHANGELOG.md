@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### feat(daily-review): 恢复 AI 友好的每日复盘入口
+
+- 新增 `scripts/daily_review.py`，输出 `report.md + prompt.md + json`
+- `quickstart.sh daily-review` 改为调用新的根目录脚本
+- `portfolio.toml` 支持 `[[watchlist]]` 观察列表，可检查基础买点触发
+- 新增 `docs/claw-daily-review.md`，明确“项目能力 + claw 薄封装”的接入方式
+- 新增 `watchlist_signals/` 观察列表插件框架，内置 `target_buy` / `breakout_buy`
+- `[[holdings]]` 支持 `risk_rules`，可覆盖默认止损/移动止损/止盈参数
+
 ## v0.8.0 - 2026-04-30
 
 ### refactor: 删除 llm_digest 模块，新增数据访问层

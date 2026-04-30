@@ -26,6 +26,8 @@ vim .env                                   # 配置 API 密钥（可选）
 ./quickstart.sh attr 2026-01-01 2026-03-31          # 仅归因分析
 ./quickstart.sh risk                                 # 仅风控（总权益自动从 PDF 读取）
 ./quickstart.sh risk 500000                          # 手动指定总权益
+./quickstart.sh daily-review                         # 生成每日复盘 report/prompt/json
+./quickstart.sh daily-pack                           # 每日复盘 + 图表
 ./quickstart.sh review 601216                        # 交易复盘（指定股票）
 ./quickstart.sh earnings <PDF> 601216                # 财报摘要
 ./quickstart.sh pattern build 600519,000001          # 构建形态样本库
@@ -33,6 +35,14 @@ vim .env                                   # 配置 API 密钥（可选）
 ```
 
 **配置文件说明：** 详见 [docs/configuration-guide.md](docs/configuration-guide.md)
+
+`portfolio.toml` 现在同时承载两类 AI 复盘输入：
+- `[[holdings]]` 当前持仓，用于风控和持仓复盘
+- `[[watchlist]]` 待买入观察列表，用于每日复盘里的买点提醒
+
+同时支持两类可扩展规则：
+- `[[holdings]].risk_rules`：覆盖默认止损/止盈/移动止损参数
+- `[[watchlist]].signal_rules`：给观察列表插件传入自定义参数
 
 ## 系统架构
 
@@ -201,6 +211,20 @@ cd risk_control
 | P4 | 持仓重要事件提醒 | 财报/分红/增减持等关键事件提前提醒 | 6-7月 |
 
 详见 [docs/roadmap-phase2.md](docs/roadmap-phase2.md)
+
+### AI 友好入口
+
+每日复盘建议优先做成“项目内稳定能力”，再由 `claw`/agent 做薄封装调用：
+
+```bash
+./quickstart.sh daily-review
+```
+
+会输出到 `output/`：
+- `daily_review_YYYYMMDD.json`：结构化上下文，适合 agent 直接读取
+- `daily_review_YYYYMMDD_prompt.md`：可直接喂给 `claw` 的复盘提示词
+- `daily_review_YYYYMMDD_report.md`：本地规则生成的基础复盘稿
+- `risk_snapshot_YYYYMMDD_daily_review.json`：图表和二次分析复用的风控快照
 
 ## 数据源
 

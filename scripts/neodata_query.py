@@ -12,6 +12,7 @@ PROXY_PORT = os.getenv("AUTH_GATEWAY_PORT", "19000")
 BASE_URL = f"http://localhost:{PROXY_PORT}/proxy/api"
 REMOTE_URL = "https://jprx.m.qq.com/aizone/skillserver/v1/proxy/teamrouter_neodata/query"
 
+
 def query_neodata(query, sub_channel="qclaw", data_type="api", request_id=None):
     payload = {
         "channel": "neodata",
@@ -30,14 +31,16 @@ def query_neodata(query, sub_channel="qclaw", data_type="api", request_id=None):
     resp.raise_for_status()
     return resp.json()
 
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--query", "-q", required=True)
     parser.add_argument("--sub-channel", "-s", default="qclaw")
-    parser.add_argument("--data-type", "-d", default="api", choices=["all","api","doc"])
+    parser.add_argument("--data-type", "-d", default="api", choices=["all", "api", "doc"])
     args = parser.parse_args()
     result = query_neodata(args.query, args.sub_channel, args.data_type)
     print(json.dumps(result, ensure_ascii=False, indent=2))
+
 
 if __name__ == "__main__":
     main()

@@ -9,7 +9,7 @@ from risk_control.signals.state import clear_inactive_signal_records
 from risk_control.signals.strategies.add_position import check as check_add_position
 from risk_control.scripts.anomaly_detect import detect_anomalies
 from risk_control.scripts.risk_report import enrich_portfolio, validate_portfolio_prices
-from risk_control.scripts.stop_loss import check_circuit_breaker
+from risk_control.scripts.stop_loss import calc_stop_take_levels, check_circuit_breaker
 from shared import data_provider
 
 
@@ -170,6 +170,40 @@ class RiskControlTests(unittest.TestCase):
 
         self.assertEqual(len(second), 1)
         self.assertIn("第2次加仓", second[0]["response_plan"])
+
+    def test_calc_stop_take_levels_supports_per_holding_risk_rule_overrides(self):
+        portfolio = pd.DataFrame([{
+            "code": "A",
+            "name": "Alpha",
+            "quantity": 100,
+            "cost_price": 100.0,
+            "current_price": 130.0,
+            "risk_rules": {
+                "stop_loss_atr_multiplier": 1.0,
+                "trailing_stop_atr_multiplier": 1.5,
+                "take_profit_tiers": [
+                    {"trigger_pct": 0.1, "sell_ratio": 0.5},
+                    {"trigger_pct": 0.2, "sell_ratio": 0.5},
+                ],
+            },
+        }])
+        prices = {
+            "A": pd.DataFrame({
+                "date": pd.date_range("2024-01-01", periods=20),
+                "open": [100.0] * 20,
+                "high": [132.0] * 20,
+                "low": [98.0] * 20,
+                "close": [130.0] * 20,
+                "volume": [1000] * 20,
+            })
+        }
+
+        result = calc_stop_take_levels(portfolio, prices)[0]
+
+        self.assertEqual(result["stop_loss_atr_multiplier"], 1.0)
+        self.assertEqual(result["trailing_stop_atr_multiplier"], 1.5)
+        self.assertEqual(result["take_profit_tiers"][0]["trigger_pct"], 0.1)
+        self.assertEqual(result["take_profit_tiers"][0]["sell_ratio"], 0.5)
 
 
 if __name__ == "__main__":

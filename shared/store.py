@@ -95,6 +95,12 @@ def get_portfolio():
     return load_portfolio_from_toml(str(_PORTFOLIO_TOML))
 
 
+def get_watchlist():
+    """读取待买入观察列表。"""
+    from shared.portfolio_config import load_watchlist_from_toml
+    return load_watchlist_from_toml(str(_PORTFOLIO_TOML))
+
+
 def get_account():
     """读取账户配置。
 

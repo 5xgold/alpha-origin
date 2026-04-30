@@ -66,7 +66,8 @@ def load_portfolio_from_toml(toml_path: str = None) -> pd.DataFrame:
         toml_path: TOML 文件路径，默认为项目根目录的 portfolio.toml
 
     Returns:
-        DataFrame with columns: code, name, market, quantity, cost_price, familiarity_detail
+        DataFrame with columns:
+        code, name, market, quantity, cost_price, familiarity_detail, risk_rules
 
     Raises:
         FileNotFoundError: 如果 portfolio.toml 不存在
@@ -100,6 +101,7 @@ def load_portfolio_from_toml(toml_path: str = None) -> pd.DataFrame:
 
     # 解析熟悉程度评估（familiarity dict），向后兼容 conviction
     familiarity_details = []
+    risk_rules_list = []
     for h in holdings:
         fam = h.get("familiarity", {})
         if not fam and h.get("conviction", False):
@@ -109,9 +111,74 @@ def load_portfolio_from_toml(toml_path: str = None) -> pd.DataFrame:
                 "valuation_low", "trend_up",
             ]}
         familiarity_details.append(fam)
+        risk_rules = h.get("risk_rules", {})
+        if not isinstance(risk_rules, dict):
+            raise ValueError(f"{h.get('code', 'unknown')} 的 risk_rules 必须是 table/dict")
+        risk_rules_list.append(risk_rules)
     df["familiarity_detail"] = familiarity_details
+    df["risk_rules"] = risk_rules_list
 
-    return df[["code", "name", "market", "quantity", "cost_price", "familiarity_detail"]]
+    return df[[
+        "code", "name", "market", "quantity", "cost_price",
+        "familiarity_detail", "risk_rules",
+    ]]
+
+
+def load_watchlist_from_toml(toml_path: str = None) -> pd.DataFrame:
+    """从 portfolio.toml 加载观察列表。
+
+    支持的可选字段:
+    - target_buy_price: 回调到该价格及以下视为关注买点
+    - breakout_price: 向上突破该价格视为突破买点
+    - signal_rules: 插件策略的参数 dict
+    - notes: 备注
+    - enabled: 是否启用，默认 true
+    """
+    data = _load_toml(toml_path)
+    rows = data.get("watchlist", [])
+    if not rows:
+        return pd.DataFrame(columns=[
+            "code", "name", "market", "target_buy_price",
+            "breakout_price", "signal_rules", "notes", "enabled",
+        ])
+
+    df = pd.DataFrame(rows)
+    required = {"code", "name", "market"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"观察列表缺少必要字段：{missing}")
+
+    df["code"] = df["code"].astype(str)
+    df["name"] = df["name"].astype(str)
+    df["market"] = df["market"].astype(str)
+    df["target_buy_price"] = pd.to_numeric(df.get("target_buy_price"), errors="coerce")
+    df["breakout_price"] = pd.to_numeric(df.get("breakout_price"), errors="coerce")
+    signal_rules = df.get("signal_rules")
+    if signal_rules is None:
+        df["signal_rules"] = [{} for _ in range(len(df))]
+    else:
+        normalized = []
+        for idx, value in enumerate(signal_rules.tolist()):
+            if value is None:
+                normalized.append({})
+            elif isinstance(value, float) and pd.isna(value):
+                normalized.append({})
+            elif isinstance(value, dict):
+                normalized.append(value)
+            else:
+                raise ValueError(f"观察列表第 {idx + 1} 行的 signal_rules 必须是 table/dict")
+        df["signal_rules"] = normalized
+    df["notes"] = df.get("notes", "").fillna("").astype(str)
+    enabled = df.get("enabled")
+    if enabled is None:
+        df["enabled"] = True
+    else:
+        df["enabled"] = enabled.fillna(True).astype(bool)
+
+    return df[[
+        "code", "name", "market", "target_buy_price",
+        "breakout_price", "signal_rules", "notes", "enabled",
+    ]]
 
 
 def sync_portfolio_to_csv(toml_path: str = None, csv_path: str = None):
@@ -124,7 +191,7 @@ def sync_portfolio_to_csv(toml_path: str = None, csv_path: str = None):
     """
     df = load_portfolio_from_toml(toml_path)
     # familiarity_detail 是 dict 列，CSV 不支持，导出时去掉
-    export_df = df.drop(columns=["familiarity_detail"], errors="ignore")
+    export_df = df.drop(columns=["familiarity_detail", "risk_rules"], errors="ignore")
     if csv_path is None:
         csv_path = Path(__file__).parent.parent / "risk_control" / "data" / "portfolio.csv"
     else:

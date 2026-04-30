@@ -25,6 +25,7 @@ update_time = "2026-01-01 09:00" # (可选) 更新时间，仅供记录
 # 1. 运行 ./scripts/init_project.sh 自动生成配置文件
 # 2. 或手动复制本文件为 portfolio.toml，修改为你的实际持仓
 # 3. 运行 ./quickstart.sh risk 即可执行风控检查
+# 4. 运行 ./quickstart.sh daily-review 即可生成 AI 可消费的每日复盘输入包
 
 [[holdings]]
 code = "600519"
@@ -33,6 +34,7 @@ market = "上海"
 quantity = 100
 cost_price = 1800.0
 familiarity = {business_model = true, shareholder_friendly = true, valuation_low = false, trend_up = true}
+risk_rules = {stop_loss_atr_multiplier = 1.8, trailing_stop_atr_multiplier = 2.5}
 
 [[holdings]]
 code = "000001"
@@ -55,3 +57,24 @@ name = "互联网ETF"
 market = "深圳"
 quantity = 10000
 cost_price = 0.85
+
+# ========== 待买入观察列表（可选） ==========
+# target_buy_price: 回调到该价格及以下，提示关注买点
+# breakout_price: 向上突破该价格，提示突破买点
+# signal_rules: 预留给自定义观察信号插件的参数 table
+
+[[watchlist]]
+code = "300750"
+name = "宁德时代"
+market = "深圳"
+target_buy_price = 180.0
+breakout_price = 205.0
+signal_rules = {preferred_strategy = "target_buy"}
+notes = "等回调缩量企稳，或放量突破后跟踪"
+
+[[watchlist]]
+code = "00700"
+name = "腾讯控股"
+market = "沪港通"
+target_buy_price = 320.0
+notes = "只做核心资产观察，不追高"

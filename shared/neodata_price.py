@@ -25,27 +25,22 @@ except ImportError:
     print("需要安装 requests: pip install requests", file=sys.stderr)
     sys.exit(1)
 
-# ============================================================
-# 配置
-# ============================================================
 PROXY_PORT = os.getenv("AUTH_GATEWAY_PORT", "19000")
 BASE_URL = f"http://localhost:{PROXY_PORT}/proxy/api"
 REMOTE_URL = "https://jprx.m.qq.com/aizone/skillserver/v1/proxy/teamrouter_neodata/query"
 CACHE_DIR = Path(os.getenv("QUANT_CACHE_DIR", "/Users/5xgold/PythonProjects/data/cache"))
-CACHE_EXPIRY_DAYS = 1  # 缓存有效期（天）
+CACHE_EXPIRY_DAYS = 1
 
-# 代码前缀映射（ portfolio.toml → 新浪格式）
 _PREFIX_MAP = {
-    "60": "sh",   # 上交所
-    "68": "sh",   # 科创板
-    "00": "sz",   # 深交所主板/中小板
-    "30": "sz",   # 创业板
-    "15": "sz",   # 深交所ETF
-    "16": "sz",   # 深交所ETF
-    "08": "sz",   # 三板
+    "60": "sh",
+    "68": "sh",
+    "00": "sz",
+    "30": "sz",
+    "15": "sz",
+    "16": "sz",
+    "08": "sz",
 }
-# 港股特殊处理
-_HK_CODE_MAP = {}  # 00696 等在 NeoData 直接用数字代码
+_HK_CODE_MAP = {}
 
 _EMPTY_DF_COLS = ["date", "open", "high", "low", "close", "volume"]
 _QUOTE_TYPE_KEYWORDS = (
@@ -58,12 +53,11 @@ _QUOTE_TYPE_KEYWORDS = (
 
 
 def _code_prefix(code: str) -> str:
-    """返回新浪格式前缀 sh/sz"""
     c = str(code).strip().lstrip("sz").lstrip("sh")
     for k, v in _PREFIX_MAP.items():
         if c.startswith(k):
             return v
-    return "sh"  # 默认沪市
+    return "sh"
 
 
 def _cache_valid(path: Path, expiry_days: int) -> bool:
@@ -73,11 +67,7 @@ def _cache_valid(path: Path, expiry_days: int) -> bool:
     return age_days < expiry_days
 
 
-# ============================================================
-# 核心：调用 NeoData API
-# ============================================================
 def _call_neodata(query: str) -> dict:
-    """发送请求到 NeoData，返回原始 JSON dict"""
     payload = {
         "channel": "neodata",
         "sub_channel": "qclaw",
@@ -96,12 +86,7 @@ def _call_neodata(query: str) -> dict:
     return resp.json()
 
 
-# ============================================================
-# 解析 NeoData 响应
-# ============================================================
 def _parse_price_from_content(content: str) -> dict | None:
-    """从 NeoData 股票实时行情 content 文本中提取字段"""
-    # 匹配 "最新价格:5.55元"
     price = re.search(r"最新价格:\s*([\d.]+)", content)
     prev_close = re.search(r"昨日收盘价格:\s*([\d.]+)", content)
     open_px = re.search(r"今日开盘价格:\s*([\d.]+)", content)
@@ -109,7 +94,6 @@ def _parse_price_from_content(content: str) -> dict | None:
     low = re.search(r"最低价?:\s*([\d.]+)", content)
     change_pct = re.search(r"当日涨跌幅:\s*([\-+\d.]+)%", content)
     volume_str = re.search(r"成交数量\(手\):\s*([\d,]+)", content)
-    amount_str = re.search(r"成交金额\(万元\):\s*([\d,.]+)", content)
     pe = re.search(r"市盈率\(TTM\):\s*([\d.]+)", content)
     pb = re.search(r"市净率:\s*([\d.]+)", content)
 
@@ -121,7 +105,7 @@ def _parse_price_from_content(content: str) -> dict | None:
     o = float(open_px.group(1)) if open_px else p
     h = float(high.group(1)) if high else p
     l = float(low.group(1)) if low else p
-    v = int(volume_str.group(1).replace(",", "")) * 100 if volume_str else 0  # 手→股
+    v = int(volume_str.group(1).replace(",", "")) * 100 if volume_str else 0
 
     return {
         "price": p,
@@ -137,7 +121,6 @@ def _parse_price_from_content(content: str) -> dict | None:
 
 
 def _extract_security_name(content: str) -> str | None:
-    """从 NeoData 文本中提取证券名称，兼容股票/ETF/基金格式。"""
     patterns = (
         r"([^\s(（:：]{2,32})\s*[（(]代码[:：]",
         r"名称[:：]\s*([^\s(（:：]{2,32})",
@@ -150,7 +133,6 @@ def _extract_security_name(content: str) -> str | None:
 
 
 def _parse_index_pe(content: str) -> dict | None:
-    """从 NeoData 大盘指数估值 content 中提取 PE 分位"""
     pe_ttm = re.search(r"市盈率TTM[：:]\s*([\d.]+)", content)
     pct = re.search(r"历史百分位(?:\s*[（(]\s*[%％]\s*[）)])?[：:]\s*([\d.]+)", content)
     if not pe_ttm:
@@ -161,37 +143,8 @@ def _parse_index_pe(content: str) -> dict | None:
     }
 
 
-# ============================================================
-# 公开接口
-# ============================================================
 def get_neodata_prices(code: str, start_date: str, end_date: str, adjust: str = "") -> dict:
-    """获取单只股票/ETF/指数的近期行情（单日）
-
-    Args:
-        code: 股票代码（6位纯数字）
-        start_date: 开始日期 YYYY-MM-DD
-        end_date: 结束日期 YYYY-MM-DD
-        adjust: 复权方式（本接口只支持不复权，返回 raw）
-
-    Returns:
-        dict {
-            "code": str,
-            "name": str,
-            "date": str,           # 最新行情日期
-            "open/high/low/close": float,
-            "volume": int,
-            "change_pct": float,
-            "pe": float | None,
-            "pb": float | None,
-            "raw": str,            # 原始 content
-            "df": DataFrame | None,
-        }
-        失败时返回空 dict {}
-    """
     code = str(code).strip()
-    is_hk = code.startswith("00") and len(code) == 5  # 简单判断：5位港股
-
-    # 查询名称
     try:
         result = _call_neodata(f"{code} 今日行情")
     except Exception as e:
@@ -203,7 +156,6 @@ def get_neodata_prices(code: str, start_date: str, end_date: str, adjust: str = 
     recall_list = api_data.get("apiRecall", [])
     entity_list = api_data.get("entity", [])
 
-    # 提取股票实时行情
     stock_info = {}
     for item in recall_list:
         t = item.get("type", "")
@@ -216,15 +168,13 @@ def get_neodata_prices(code: str, start_date: str, end_date: str, adjust: str = 
                 break
 
     if not stock_info:
-        # 降级：尝试从 entity 提取
         if entity_list:
             stock_info["name"] = entity_list[0].get("name") or code
             stock_info["raw"] = ""
 
     stock_info["code"] = code
-    stock_info["date"] = end_date  # 简化：用请求的结束日期
+    stock_info["date"] = end_date
 
-    # 同时拉取指数 PE 分位（大盘指数）
     index_pe_info = {}
     for item in recall_list:
         t = item.get("type", "")
@@ -238,13 +188,6 @@ def get_neodata_prices(code: str, start_date: str, end_date: str, adjust: str = 
 
 
 def get_index_quotes_neodata(index_names: list[str]) -> dict[str, dict]:
-    """批量获取指数行情和 PE 分位
-
-    Args:
-        index_names: 如 ["上证指数", "深证成指", "创业板指", "沪深300", "中证500"]
-    Returns:
-        dict[index_name] -> {price, change_pct, pe_ttm, pe_percentile}
-    """
     result = {}
     for name in index_names:
         try:
@@ -260,66 +203,9 @@ def get_index_quotes_neodata(index_names: list[str]) -> dict[str, dict]:
         for item in recall:
             t = item.get("type", "")
             c = item.get("content", "")
-            if "股票实时行情" in t:
-                p = _parse_price_from_content(c)
-                if p:
-                    info.update({k: v for k, v in p.items() if k != "raw"})
-            elif "大盘指数估值" in t:
-                pe = _parse_index_pe(c)
-                if pe:
-                    info.update(pe)
+            if any(keyword in t for keyword in _QUOTE_TYPE_KEYWORDS):
+                info.update(_parse_price_from_content(c) or {})
+            if "大盘指数估值" in t:
+                info.update(_parse_index_pe(c) or {})
         result[name] = info
     return result
-
-
-def get_batch_prices(codes: list[str], date: str) -> dict[str, dict]:
-    """批量获取多只股票当日行情
-
-    Args:
-        codes: 股票代码列表
-        date: 行情日期 YYYY-MM-DD
-    Returns:
-        dict[code] -> stock_info dict
-    """
-    all_info = {}
-    for code in codes:
-        info = get_neodata_prices(code, date, date)
-        if info.get("stock"):
-            all_info[code] = info["stock"]
-        else:
-            all_info[code] = {}
-    return all_info
-
-
-# ============================================================
-# 单元测试
-# ============================================================
-if __name__ == "__main__":
-    print("=== NeoData 行情测试 ===")
-
-    codes = ["601216", "003816", "00696", "159792", "159842"]
-    indices = ["上证指数", "深证成指", "创业板指", "沪深300", "中证500"]
-
-    print("\n--- 持仓行情 ---")
-    prices = get_batch_prices(codes, "2026-04-28")
-    for code, info in prices.items():
-        if info:
-            print(f"  {code} {info.get('name','')}: "
-                  f"现价={info.get('price')} "
-                  f"涨跌幅={info.get('change_pct')}% "
-                  f"PE={info.get('pe')} "
-                  f"成交量={info.get('volume',0)//100:.0f}手")
-        else:
-            print(f"  {code}: 获取失败")
-
-    print("\n--- 指数行情 ---")
-    idx_data = get_index_quotes_neodata(indices)
-    for name, info in idx_data.items():
-        if info:
-            print(f"  {name}: "
-                  f"点位={info.get('price')} "
-                  f"涨跌幅={info.get('change_pct')}% "
-                  f"PE={info.get('pe_ttm')} "
-                  f"分位={info.get('pe_percentile')}%")
-        else:
-            print(f"  {name}: 获取失败")

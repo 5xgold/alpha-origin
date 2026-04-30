@@ -13,6 +13,7 @@ from risk_control.config import (
     TRAILING_STOP_ATR_MULTIPLIER,
     CIRCUIT_BREAKER,
     PORTFOLIO_LOOKBACK_DAYS,
+    get_regime_params,
 )
 
 
@@ -27,6 +28,10 @@ def calc_stop_take_levels(portfolio_df, prices_dict):
         list[dict]: 每只股票的止损止盈信息
     """
     results = []
+    regime = get_regime_params()
+    sl_mult = STOP_LOSS_ATR_MULTIPLIER * regime["stop_loss_multiplier"]
+    trail_mult = TRAILING_STOP_ATR_MULTIPLIER * regime["trailing_stop_multiplier"]
+    tp_mult = regime["take_profit_multiplier"]
 
     for _, row in portfolio_df.iterrows():
         code = str(row["code"])
@@ -48,6 +53,9 @@ def calc_stop_take_levels(portfolio_df, prices_dict):
             "trailing_stop": None,
             "signal": "hold",
             "pnl_pct": 0.0,
+            "stop_loss_atr_multiplier": sl_mult,
+            "trailing_stop_atr_multiplier": trail_mult,
+            "take_profit_multiplier": tp_mult,
         }
 
         if cost > 0:
@@ -66,27 +74,28 @@ def calc_stop_take_levels(portfolio_df, prices_dict):
         atr = float(atr_series.iloc[-1])
         info["atr"] = atr
 
-        # 止损价 = 成本 - N×ATR
+        # 止损价 = 成本 - N×ATR（受市场区间调节）
         if cost > 0:
-            info["stop_loss"] = round(cost - STOP_LOSS_ATR_MULTIPLIER * atr, 3)
+            info["stop_loss"] = round(cost - sl_mult * atr, 3)
         else:
-            info["stop_loss"] = round(current - STOP_LOSS_ATR_MULTIPLIER * atr, 3)
+            info["stop_loss"] = round(current - sl_mult * atr, 3)
 
-        # 分批止盈
+        # 分批止盈（止盈目标受市场区间调节）
         base = cost if cost > 0 else current
         for pct, ratio in TAKE_PROFIT_TIERS:
-            tp_price = round(base * (1 + pct), 3)
+            adjusted_pct = pct * tp_mult
+            tp_price = round(base * (1 + adjusted_pct), 3)
             info["take_profit_tiers"].append({
-                "trigger_pct": pct,
+                "trigger_pct": adjusted_pct,
                 "price": tp_price,
                 "sell_ratio": ratio,
                 "triggered": current >= tp_price,
             })
 
-        # 移动止损 = 近期最高价 - N×ATR
+        # 移动止损 = 近期最高价 - N×ATR（受市场区间调节）
         recent_high = float(df["high"].astype(float).iloc[-ATR_PERIOD:].max())
         info["recent_high"] = recent_high
-        info["trailing_stop"] = round(recent_high - TRAILING_STOP_ATR_MULTIPLIER * atr, 3)
+        info["trailing_stop"] = round(recent_high - trail_mult * atr, 3)
 
         # 信号判定
         if current <= info["stop_loss"]:
@@ -119,11 +128,13 @@ def check_circuit_breaker(portfolio_df, prices_dict):
         }
     """
     pv = calc_portfolio_values(portfolio_df, prices_dict, lookback_days=PORTFOLIO_LOOKBACK_DAYS)
+    regime = get_regime_params()
+    cb_mult = regime["circuit_breaker_multiplier"]
 
     result = {
-        "daily": {"drawdown": 0.0, "threshold": CIRCUIT_BREAKER["daily"], "triggered": False},
-        "weekly": {"drawdown": 0.0, "threshold": CIRCUIT_BREAKER["weekly"], "triggered": False},
-        "monthly": {"drawdown": 0.0, "threshold": CIRCUIT_BREAKER["monthly"], "triggered": False},
+        "daily": {"drawdown": 0.0, "threshold": CIRCUIT_BREAKER["daily"] * cb_mult, "triggered": False},
+        "weekly": {"drawdown": 0.0, "threshold": CIRCUIT_BREAKER["weekly"] * cb_mult, "triggered": False},
+        "monthly": {"drawdown": 0.0, "threshold": CIRCUIT_BREAKER["monthly"] * cb_mult, "triggered": False},
         "action": None,
     }
 
@@ -134,21 +145,21 @@ def check_circuit_breaker(portfolio_df, prices_dict):
     if len(pv) >= 2:
         daily_dd = calc_drawdown(pv.iloc[-2:])["current"]
         result["daily"]["drawdown"] = float(daily_dd)
-        if daily_dd <= -CIRCUIT_BREAKER["daily"]:
+        if daily_dd <= -result["daily"]["threshold"]:
             result["daily"]["triggered"] = True
 
     # 周回撤：最近 5 个交易日窗口的当前回撤
     if len(pv) >= 6:
         weekly_dd = calc_drawdown(pv.iloc[-6:])["current"]
         result["weekly"]["drawdown"] = float(weekly_dd)
-        if weekly_dd <= -CIRCUIT_BREAKER["weekly"]:
+        if weekly_dd <= -result["weekly"]["threshold"]:
             result["weekly"]["triggered"] = True
 
     # 月回撤：最近 20 个交易日窗口的当前回撤
     if len(pv) >= 21:
         monthly_dd = calc_drawdown(pv.iloc[-21:])["current"]
         result["monthly"]["drawdown"] = float(monthly_dd)
-        if monthly_dd <= -CIRCUIT_BREAKER["monthly"]:
+        if monthly_dd <= -result["monthly"]["threshold"]:
             result["monthly"]["triggered"] = True
 
     # 最严重的触发决定动作

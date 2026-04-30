@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 import pandas as pd
 
+from risk_control.signals.state import clear_inactive_signal_records
+from risk_control.signals.strategies.add_position import check as check_add_position
 from risk_control.scripts.anomaly_detect import detect_anomalies
 from risk_control.scripts.risk_report import enrich_portfolio, validate_portfolio_prices
 from risk_control.scripts.stop_loss import check_circuit_breaker
@@ -111,6 +113,63 @@ class RiskControlTests(unittest.TestCase):
             self.assertListEqual(result["close"].tolist(), [10.5, 11.5, 12.5])
             self.assertTrue((Path(tmpdir) / "benchmarks" / "000300.csv").exists())
             ensure_login.assert_not_called()
+
+    def test_clear_inactive_signal_records_resets_only_inactive_strategies(self):
+        state = {
+            "_meta": {"version": 1, "last_updated": ""},
+            "signals": {
+                "A": {
+                    "stop_loss_basic": {"first_triggered": "2026-04-28", "trigger_count": 2},
+                    "trailing_stop": {"first_triggered": "2026-04-29", "trigger_count": 1},
+                },
+                "B": {
+                    "holding_period_weak": {"first_triggered": "2026-04-29", "trigger_count": 1},
+                },
+            },
+            "holdings_first_seen": {},
+        }
+
+        clear_inactive_signal_records(state, {("A", "stop_loss_basic")})
+
+        self.assertIn("stop_loss_basic", state["signals"]["A"])
+        self.assertNotIn("trailing_stop", state["signals"]["A"])
+        self.assertEqual(state["signals"]["B"], {})
+
+    def test_add_position_increments_stage_between_triggers(self):
+        portfolio = pd.DataFrame([{
+            "code": "A",
+            "name": "Alpha",
+            "cost_price": 100.0,
+            "current_price": 92.0,
+            "market_value": 1000.0,
+            "familiarity_detail": {
+                "business_model": True,
+                "shareholder_friendly": True,
+                "valuation_low": True,
+                "trend_up": True,
+            },
+        }])
+        prices = {
+            "A": pd.DataFrame({
+                "date": pd.date_range("2024-01-01", periods=20),
+                "open": [100.0] * 20,
+                "high": [101.0] * 20,
+                "low": [91.5] * 20,
+                "close": [92.0] * 20,
+                "volume": [1000] * 20,
+            })
+        }
+        state = {"_meta": {"version": 1, "last_updated": ""}, "signals": {}, "holdings_first_seen": {}}
+
+        first = check_add_position(portfolio, prices, state=state, total_equity=10000.0)
+        second = check_add_position(portfolio, prices, state=state, total_equity=10000.0)
+
+        self.assertEqual(len(first), 1)
+        self.assertIn("第1次加仓", first[0]["response_plan"])
+        self.assertEqual(state["signals"]["A"]["add_position"]["add_count"], 2)
+
+        self.assertEqual(len(second), 1)
+        self.assertIn("第2次加仓", second[0]["response_plan"])
 
 
 if __name__ == "__main__":

@@ -82,6 +82,71 @@ ALERT_ACTIONS = {
 }
 
 # ═══════════════════════════════════════════
+# 信号插件系统
+# ═══════════════════════════════════════════
+
+# 市场多空区间 — 多头手松、空头手紧
+# 通过乘数调节止损/止盈参数，>1 放宽，<1 收紧
+MARKET_REGIME_PROFILES = {
+    "bull": {
+        "label": "多头",
+        "stop_loss_multiplier": 1.3,        # 止损放宽30%（ATR倍数 × 1.3）
+        "take_profit_multiplier": 1.2,      # 止盈目标放大50%
+        "trailing_stop_multiplier": 1.3,    # 移动止损放宽30%
+        "circuit_breaker_multiplier": 1.3,  # 熔断阈值放宽30%
+    },
+    "bear": {
+        "label": "空头",
+        "stop_loss_multiplier": 0.7,        # 止损收紧30%
+        "take_profit_multiplier": 0.7,      # 止盈目标缩小30%
+        "trailing_stop_multiplier": 0.7,    # 移动止损收紧30%
+        "circuit_breaker_multiplier": 0.7,  # 熔断阈值收紧30%
+    },
+    "neutral": {
+        "label": "震荡",
+        "stop_loss_multiplier": 1.0,
+        "take_profit_multiplier": 1.0,
+        "trailing_stop_multiplier": 1.0,
+        "circuit_breaker_multiplier": 1.0,
+    },
+}
+
+# 当前市场区间（手动设置，未来可接入自动判断）
+CURRENT_MARKET_REGIME = "neutral"
+
+
+def get_regime_params():
+    """获取当前市场区间下的调节参数"""
+    return MARKET_REGIME_PROFILES.get(CURRENT_MARKET_REGIME,
+                                      MARKET_REGIME_PROFILES["neutral"])
+
+# 动态止损升级阶段
+DYNAMIC_STOP_PHASES = [
+    {"min_profit": 0.05, "stop_at": "breakeven",       "label": "保本"},
+    {"min_profit": 0.15, "stop_at": "cost_plus_8pct",  "label": "成本+8%"},
+    {"min_profit": 0.25, "stop_at": "trailing_tight",  "label": "紧移动止损"},
+]
+DYNAMIC_TRAILING_TIGHT_MULTIPLIER = 1.0     # Phase 3 紧移动止损倍数
+
+# 持仓周期管理
+HOLDING_PERIOD_STAGNATION_DAYS = 60         # 资金停滞天数阈值
+HOLDING_PERIOD_STAGNATION_MIN_GAIN = 0.05   # 停滞期最低收益要求
+HOLDING_PERIOD_DANGER_DAYS = 90             # 长期亏损天数阈值
+HOLDING_PERIOD_DANGER_MIN_GAIN = 0.0        # 长期亏损收益阈值
+HOLDING_PERIOD_WEAK_TREND_DAYS = 30         # 趋势走弱天数阈值
+
+# 加仓/金字塔策略
+PYRAMID_ADD_RATIOS = [0.50, 0.25]           # 加仓比例递减
+PYRAMID_SUPPORT_METHODS = ["ma20", "recent_low"]  # 支撑位计算方法
+PYRAMID_MIN_DROP_PCT = 0.07                 # 距成本至少跌7%才考虑加仓
+
+# 告警升级（信号持续天数 → 级别提升）
+ALERT_ESCALATION_DAYS = {
+    "watch_to_warning": 3,
+    "warning_to_danger": 5,
+}
+
+# ═══════════════════════════════════════════
 # 扩展预留
 # ═══════════════════════════════════════════
 

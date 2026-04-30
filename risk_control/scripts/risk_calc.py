@@ -139,6 +139,49 @@ def calc_volume_ratio(prices_df, window=20):
     return float(current_vol / avg_vol)
 
 
+def calc_ma(prices_df, period=20):
+    """计算简单移动平均线
+
+    Args:
+        prices_df: DataFrame with column [close]
+        period: MA 周期
+
+    Returns:
+        float: 最新 MA 值，数据不足返回 None
+    """
+    close = prices_df["close"].astype(float)
+    if len(close) < period:
+        return None
+    return float(close.iloc[-period:].mean())
+
+
+def calc_support_levels(prices_df, methods=None, period=20):
+    """计算支撑位
+
+    Args:
+        prices_df: DataFrame with columns [high, low, close]
+        methods: 支撑位计算方法列表，默认 ["ma20", "recent_low"]
+        period: 回溯周期
+
+    Returns:
+        list[dict]: [{"method": str, "price": float}, ...]
+    """
+    if methods is None:
+        methods = ["ma20", "recent_low"]
+
+    supports = []
+    for method in methods:
+        if method == "ma20":
+            ma = calc_ma(prices_df, period=period)
+            if ma is not None:
+                supports.append({"method": "MA20", "price": round(ma, 3)})
+        elif method == "recent_low":
+            if len(prices_df) >= period:
+                low = float(prices_df["low"].astype(float).iloc[-period:].min())
+                supports.append({"method": f"近{period}日低点", "price": round(low, 3)})
+    return supports
+
+
 def calc_portfolio_values(portfolio_df, prices_dict, lookback_days=60):
     """根据持仓和历史价格计算组合近似净值序列
 

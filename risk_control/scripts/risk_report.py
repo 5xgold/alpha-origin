@@ -18,11 +18,17 @@ from shared.config import parse_benchmark_config
 from risk_control.config import (
     MARKET_INDEX, ATR_PERIOD, PORTFOLIO_LOOKBACK_DAYS, DATA_FREQ,
     FAMILIARITY_DIMENSIONS, FAMILIARITY_LEVEL_LABELS,
+    get_regime_params,
 )
 from risk_control.scripts.risk_calc import calc_realized_vol
 from risk_control.scripts.position_check import check_positions
 from risk_control.scripts.stop_loss import calc_stop_take_levels, check_circuit_breaker
 from risk_control.scripts.anomaly_detect import detect_anomalies
+from risk_control.signals import (
+    run_all_signals, load_state, save_state, clear_stale_signals,
+    clear_inactive_signal_records,
+    classify_alerts, format_alert_section,
+)
 
 
 # ═══════════════════════════════════════════
@@ -174,7 +180,11 @@ def _fmt_money(v):
     return f"¥{v:,.0f}"
 
 
-def format_terminal_report(today, portfolio_df, total_equity, pos_result, sl_levels, cb_result, anomaly_result):
+def _fmt_atr_multiplier(v):
+    return f"{float(v):.1f}".rstrip("0").rstrip(".")
+
+
+def format_terminal_report(today, portfolio_df, total_equity, pos_result, sl_levels, cb_result, anomaly_result, alert_groups=None):
     """生成终端输出文本"""
     lines = []
     w = 72
@@ -193,6 +203,10 @@ def format_terminal_report(today, portfolio_df, total_equity, pos_result, sl_lev
                  f"现金: {_fmt_money(cash)}")
     lines.append(f"  仓位: {pos_result['current_position']:.0%}  "
                  f"持仓数: {len(portfolio_df)}")
+    regime = get_regime_params()
+    regime_label = regime["label"]
+    lines.append(f"  市场区间: {regime_label} (止损×{regime['stop_loss_multiplier']:.1f} "
+                 f"止盈×{regime['take_profit_multiplier']:.1f})")
 
     # 第一道防线
     lines.append("")
@@ -287,6 +301,11 @@ def format_terminal_report(today, portfolio_df, total_equity, pos_result, sl_lev
     else:
         lines.append("  ✅ 无异常信号")
 
+    # 信号系统
+    if alert_groups is not None:
+        lines.append("")
+        lines.extend(format_alert_section(alert_groups))
+
     # 操作建议
     suggestions = _generate_suggestions(pos_result, sl_levels, cb_result, anomaly_result)
     if suggestions:
@@ -332,16 +351,18 @@ def _generate_suggestions(pos_result, sl_levels, cb_result, anomaly_result):
     for sl in sl_levels:
         if sl["signal"] == "stop_loss":
             atr = sl.get("atr") or 0
+            sl_mult = _fmt_atr_multiplier(sl.get("stop_loss_atr_multiplier", 2.0))
             suggestions.append(
                 f"🔴 {sl['name']}({sl['code']}) 已触及止损 "
-                f"(依据: 成本{sl['cost_price']:.3f} - 2×ATR{atr:.3f} = 止损价{sl['stop_loss']:.3f} → 现价{sl['current_price']:.3f} < 止损价)"
+                f"(依据: 成本{sl['cost_price']:.3f} - {sl_mult}×ATR{atr:.3f} = 止损价{sl['stop_loss']:.3f} → 现价{sl['current_price']:.3f} < 止损价)"
             )
         elif sl["signal"] == "trailing_stop":
             atr = sl.get("atr") or 0
             rh = sl.get("recent_high") or 0
+            trail_mult = _fmt_atr_multiplier(sl.get("trailing_stop_atr_multiplier", 1.5))
             suggestions.append(
                 f"🟠 {sl['name']}({sl['code']}) 触及移动止损 "
-                f"(依据: 近14日最高{rh:.3f} - 1.5×ATR{atr:.3f} = 触发价{sl['trailing_stop']:.3f} → 现价{sl['current_price']:.3f} ≤ 触发价)"
+                f"(依据: 近14日最高{rh:.3f} - {trail_mult}×ATR{atr:.3f} = 触发价{sl['trailing_stop']:.3f} → 现价{sl['current_price']:.3f} ≤ 触发价)"
             )
         elif sl["signal"] == "take_profit":
             triggered = [t for t in sl["take_profit_tiers"] if t["triggered"]]
@@ -428,15 +449,37 @@ def run_risk_check(total_equity):
     print("检测异常信号...")
     anomaly_result = detect_anomalies(portfolio_df, prices_dict)
 
-    # 8. 输出报告
+    # 8. 信号系统
+    print("运行信号策略...")
+    sig_state = load_state()
+    clear_stale_signals(sig_state, portfolio_df["code"].astype(str).tolist())
+    signal_results = run_all_signals(
+        portfolio_df, prices_dict,
+        state=sig_state,
+        total_equity=total_equity,
+        market_vol=market_vol,
+        sl_levels=sl_levels,
+    )
+    active_signal_keys = {
+        (sig["code"], sig.get("state_key", sig["strategy"]))
+        for sig in signal_results
+    }
+    clear_inactive_signal_records(sig_state, active_signal_keys)
+    alert_groups = classify_alerts(signal_results)
+    save_state(sig_state)
+    signal_count = len(signal_results)
+    print(f"  {signal_count} 条信号")
+
+    # 9. 输出报告
     print()
     report_text = format_terminal_report(
         today, portfolio_df, total_equity,
         pos_result, sl_levels, cb_result, anomaly_result,
+        alert_groups=alert_groups,
     )
     print(report_text)
 
-    # 9. 保存 Markdown
+    # 10. 保存 Markdown
     output_dir = Path(__file__).parent.parent.parent / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
     md_path = output_dir / f"risk_report_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
@@ -448,6 +491,8 @@ def run_risk_check(total_equity):
         "stop_loss": sl_levels,
         "circuit_breaker": cb_result,
         "anomaly": anomaly_result,
+        "signals": signal_results,
+        "alert_groups": alert_groups,
     }
 
 

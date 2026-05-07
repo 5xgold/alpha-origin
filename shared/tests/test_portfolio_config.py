@@ -18,7 +18,8 @@ market = "上海"
 quantity = 10
 cost_price = 1800
 buy_date = "20240102"
-risk_rules = {stop_loss_strategy = "entry_day_low_guard", entry_day_low_buffer_ticks = 5}
+trade_plan = {status = "active", stop_loss_strategy = "entry_day_low_guard", plan_note = "test", executor = "manual"}
+risk_rules = {stop_loss_params = {buffer_ticks = 5}}
 """
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "portfolio.toml"
@@ -27,7 +28,9 @@ risk_rules = {stop_loss_strategy = "entry_day_low_guard", entry_day_low_buffer_t
 
         self.assertEqual(len(df), 1)
         self.assertEqual(df.iloc[0]["buy_date"], "20240102")
-        self.assertEqual(df.iloc[0]["risk_rules"]["stop_loss_strategy"], "entry_day_low_guard")
+        self.assertEqual(df.iloc[0]["trade_plan"]["stop_loss_strategy"], "entry_day_low_guard")
+        self.assertEqual(df.iloc[0]["trade_plan"]["plan_note"], "test")
+        self.assertEqual(df.iloc[0]["risk_rules"]["stop_loss_params"]["buffer_ticks"], 5)
 
     def test_load_portfolio_from_toml_requires_buy_date_for_entry_day_low_guard(self):
         content = """
@@ -66,6 +69,45 @@ risk_rules = {stop_loss_strategy = "entry_day_low_guard", entry_day_low_buffer_t
             path = Path(tmpdir) / "portfolio.toml"
             path.write_text(content, encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "buy_date 格式非法"):
+                load_portfolio_from_toml(str(path))
+
+    def test_load_portfolio_from_toml_requires_buy_date_for_trade_plan_strategy(self):
+        content = """
+[account]
+total_equity = 100000
+
+[[holdings]]
+code = "600519"
+name = "贵州茅台"
+market = "上海"
+quantity = 10
+cost_price = 1800
+trade_plan = {status = "active", stop_loss_strategy = "entry_day_low_guard"}
+risk_rules = {stop_loss_params = {buffer_ticks = 5}}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "portfolio.toml"
+            path.write_text(content, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "缺少 buy_date"):
+                load_portfolio_from_toml(str(path))
+
+    def test_load_portfolio_from_toml_rejects_unsupported_stop_loss_strategy(self):
+        content = """
+[account]
+total_equity = 100000
+
+[[holdings]]
+code = "600519"
+name = "贵州茅台"
+market = "上海"
+quantity = 10
+cost_price = 1800
+trade_plan = {status = "active", stop_loss_strategy = "legacy_stop"}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "portfolio.toml"
+            path.write_text(content, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "stop_loss_strategy 不支持: legacy_stop"):
                 load_portfolio_from_toml(str(path))
 
     def test_load_watchlist_from_toml(self):

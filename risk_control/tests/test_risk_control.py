@@ -215,9 +215,14 @@ class RiskControlTests(unittest.TestCase):
             "quantity": 100,
             "cost_price": 100.0,
             "current_price": 9.94,
-            "risk_rules": {
+            "trade_plan": {
+                "status": "active",
                 "stop_loss_strategy": "entry_day_low_guard",
-                "entry_day_low_buffer_ticks": 5,
+            },
+            "risk_rules": {
+                "stop_loss_params": {
+                    "buffer_ticks": 5,
+                },
             },
         }])
         prices = {
@@ -238,6 +243,42 @@ class RiskControlTests(unittest.TestCase):
         self.assertEqual(result["price_tick"], 0.01)
         self.assertEqual(result["stop_loss"], 9.95)
         self.assertEqual(result["signal"], "stop_loss")
+
+    def test_calc_stop_take_levels_trade_plan_strategy_overrides_risk_rules(self):
+        portfolio = pd.DataFrame([{
+            "code": "A",
+            "name": "Alpha",
+            "market": "上海",
+            "buy_date": "20240102",
+            "quantity": 100,
+            "cost_price": 100.0,
+            "current_price": 9.94,
+            "trade_plan": {
+                "status": "active",
+                "stop_loss_strategy": "entry_day_low_guard",
+            },
+            "risk_rules": {
+                "stop_loss_strategy": "atr",
+                "stop_loss_params": {
+                    "buffer_ticks": 5,
+                },
+            },
+        }])
+        prices = {
+            "A": pd.DataFrame({
+                "date": pd.to_datetime(["2024-01-02"] + list(pd.date_range("2024-01-03", periods=19))),
+                "open": [10.2] * 20,
+                "high": [10.4] * 20,
+                "low": [10.0] + [9.9] * 19,
+                "close": [10.1] + [9.94] * 19,
+                "volume": [1000] * 20,
+            })
+        }
+
+        result = calc_stop_take_levels(portfolio, prices)[0]
+
+        self.assertEqual(result["stop_loss_strategy"], "entry_day_low_guard")
+        self.assertEqual(result["stop_loss"], 9.95)
 
 
 if __name__ == "__main__":

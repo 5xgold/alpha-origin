@@ -14,6 +14,8 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 
 _BUY_DATE_PATTERN = re.compile(r"^\d{8}$")
+_VALID_STOP_LOSS_STRATEGIES = {"atr", "entry_day_low_guard"}
+_BUY_DATE_REQUIRED_STRATEGIES = {"entry_day_low_guard"}
 
 
 def _load_toml(toml_path: str = None) -> dict:
@@ -71,7 +73,7 @@ def load_portfolio_from_toml(toml_path: str = None) -> pd.DataFrame:
 
     Returns:
         DataFrame with columns:
-        code, name, market, quantity, cost_price, buy_date, familiarity_detail, risk_rules
+        code, name, market, quantity, cost_price, buy_date, familiarity_detail, trade_plan, risk_rules
 
     Raises:
         FileNotFoundError: 如果 portfolio.toml 不存在
@@ -110,6 +112,7 @@ def load_portfolio_from_toml(toml_path: str = None) -> pd.DataFrame:
 
     # 解析熟悉程度评估（familiarity dict），向后兼容 conviction
     familiarity_details = []
+    trade_plan_list = []
     risk_rules_list = []
     for h in holdings:
         code = str(h.get("code", "unknown"))
@@ -123,28 +126,63 @@ def load_portfolio_from_toml(toml_path: str = None) -> pd.DataFrame:
                 "valuation_low", "trend_up",
             ]}
         familiarity_details.append(fam)
+        trade_plan = h.get("trade_plan", {})
+        if not isinstance(trade_plan, dict):
+            raise ValueError(f"{code} 的 trade_plan 必须是 table/dict")
+        trade_plan = _normalize_trade_plan(trade_plan)
         risk_rules = h.get("risk_rules", {})
         if not isinstance(risk_rules, dict):
             raise ValueError(f"{code} 的 risk_rules 必须是 table/dict")
-        _validate_holding_config(code, name, buy_date, risk_rules)
+        risk_rules = _normalize_risk_rules(risk_rules)
+        _validate_holding_config(code, name, buy_date, trade_plan, risk_rules)
+        trade_plan_list.append(trade_plan)
         risk_rules_list.append(risk_rules)
     df["familiarity_detail"] = familiarity_details
+    df["trade_plan"] = trade_plan_list
     df["risk_rules"] = risk_rules_list
 
     return df[[
         "code", "name", "market", "quantity", "cost_price", "buy_date",
-        "familiarity_detail", "risk_rules",
+        "familiarity_detail", "trade_plan", "risk_rules",
     ]]
 
 
-def _validate_holding_config(code, name, buy_date, risk_rules):
-    strategy = str(risk_rules.get("stop_loss_strategy", "") or "").strip()
-    if strategy != "entry_day_low_guard":
+def _normalize_trade_plan(trade_plan):
+    normalized = dict(trade_plan)
+    normalized["status"] = str(normalized.get("status", "active") or "active").strip()
+    normalized["executor"] = str(normalized.get("executor", "manual") or "manual").strip()
+    normalized["plan_note"] = str(normalized.get("plan_note", "") or "").strip()
+    normalized["stop_loss_strategy"] = str(normalized.get("stop_loss_strategy", "") or "").strip()
+    normalized["updated_at"] = str(normalized.get("updated_at", "") or "").strip()
+    return normalized
+
+
+def _normalize_risk_rules(risk_rules):
+    normalized = dict(risk_rules)
+    stop_loss_params = normalized.get("stop_loss_params", {})
+    if stop_loss_params is None:
+        stop_loss_params = {}
+    if not isinstance(stop_loss_params, dict):
+        raise ValueError("risk_rules.stop_loss_params 必须是 table/dict")
+    normalized["stop_loss_params"] = dict(stop_loss_params)
+    normalized["stop_loss_strategy"] = str(normalized.get("stop_loss_strategy", "") or "").strip()
+    return normalized
+
+
+def _validate_holding_config(code, name, buy_date, trade_plan, risk_rules):
+    strategy = _resolve_stop_loss_strategy(trade_plan, risk_rules)
+    if not strategy:
+        return
+
+    if strategy not in _VALID_STOP_LOSS_STRATEGIES:
+        raise ValueError(f"{name}({code}) 的 stop_loss_strategy 不支持: {strategy}")
+
+    if strategy not in _BUY_DATE_REQUIRED_STRATEGIES:
         return
 
     if not buy_date:
         raise ValueError(
-            f"{name}({code}) 启用了 risk_rules.stop_loss_strategy='entry_day_low_guard'，"
+            f"{name}({code}) 启用了 stop_loss_strategy='{strategy}'，"
             "但缺少 buy_date。请在对应 [[holdings]] 下补充 "
             'buy_date = "YYYYMMDD"，例如 buy_date = "20240102"。'
         )
@@ -154,6 +192,14 @@ def _validate_holding_config(code, name, buy_date, risk_rules):
             f"{name}({code}) 的 buy_date 格式非法: {buy_date}。"
             '请使用 YYYYMMDD，例如 "20240102"。'
         )
+
+
+def _resolve_stop_loss_strategy(trade_plan, risk_rules):
+    if isinstance(trade_plan, dict):
+        strategy = str(trade_plan.get("stop_loss_strategy", "") or "").strip()
+        if strategy:
+            return strategy
+    return str(risk_rules.get("stop_loss_strategy", "") or "").strip()
 
 
 def load_watchlist_from_toml(toml_path: str = None) -> pd.DataFrame:
@@ -223,7 +269,7 @@ def sync_portfolio_to_csv(toml_path: str = None, csv_path: str = None):
     """
     df = load_portfolio_from_toml(toml_path)
     # familiarity_detail 是 dict 列，CSV 不支持，导出时去掉
-    export_df = df.drop(columns=["familiarity_detail", "risk_rules"], errors="ignore")
+    export_df = df.drop(columns=["familiarity_detail", "trade_plan", "risk_rules"], errors="ignore")
     if csv_path is None:
         csv_path = Path(__file__).parent.parent / "risk_control" / "data" / "portfolio.csv"
     else:

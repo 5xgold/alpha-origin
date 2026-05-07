@@ -32,7 +32,10 @@ def check(portfolio_df, prices_dict, *, state, sl_levels=None, **kwargs):
         if strategy == "entry_day_low_guard" and sl.get("entry_day_low") is not None:
             tick_size = float(sl.get("price_tick") or 0.01)
             entry_low = float(sl["entry_day_low"])
-            buffer_ticks = int(sl.get("risk_rules", {}).get("entry_day_low_buffer_ticks", 5) or 5)
+            params = sl.get("risk_rules", {}).get("stop_loss_params", {})
+            if not isinstance(params, dict):
+                params = {}
+            buffer_ticks = int(params.get("buffer_ticks", sl.get("risk_rules", {}).get("entry_day_low_buffer_ticks", 5)) or 5)
             detail = (
                 f"买入日{sl.get('entry_date', 'N/A')}最低价{entry_low:.3f} - "
                 f"{buffer_ticks}个价位({tick_size:.2f}) = 止损{sl['stop_loss']:.3f}，"

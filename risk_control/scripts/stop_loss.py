@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from shared.data_provider import get_stock_prices
+from risk_control.signals.strategies.stop_loss_modes.registry import resolve_stop_loss_price
 from risk_control.scripts.risk_calc import calc_atr, calc_portfolio_values, calc_drawdown
 from risk_control.config import (
     ATR_PERIOD,
@@ -18,12 +18,13 @@ from risk_control.config import (
 )
 
 
-def calc_stop_take_levels(portfolio_df, prices_dict):
+def calc_stop_take_levels(portfolio_df, prices_dict, total_equity=None):
     """计算每只持仓的止损/止盈/移动止损价位
 
     Args:
         portfolio_df: DataFrame[code, name, quantity, cost_price, current_price]
         prices_dict: {code: DataFrame[date, open, high, low, close, volume]}
+        total_equity: 组合总权益，当前保留作兼容参数
 
     Returns:
         list[dict]: 每只股票的止损止盈信息
@@ -39,6 +40,7 @@ def calc_stop_take_levels(portfolio_df, prices_dict):
         name = str(row["name"])
         market = str(row.get("market", ""))
         buy_date = str(row.get("buy_date", "") or "").strip()
+        trade_plan = row.get("trade_plan", {})
         cost = float(row["cost_price"])
         current = float(row["current_price"])
         qty = float(row["quantity"])
@@ -46,7 +48,7 @@ def calc_stop_take_levels(portfolio_df, prices_dict):
         if not isinstance(risk_rules, dict):
             risk_rules = {}
 
-        stop_loss_strategy = risk_rules.get("stop_loss_strategy", "atr")
+        stop_loss_strategy = _resolve_stop_loss_strategy(trade_plan, risk_rules)
         row_sl_mult = float(risk_rules.get("stop_loss_atr_multiplier", sl_mult) or sl_mult)
         row_trail_mult = float(risk_rules.get("trailing_stop_atr_multiplier", trail_mult) or trail_mult)
         row_tp_tiers = _resolve_take_profit_tiers(risk_rules, cost if cost > 0 else current, tp_mult)
@@ -71,6 +73,8 @@ def calc_stop_take_levels(portfolio_df, prices_dict):
             "entry_date": None,
             "entry_day_low": None,
             "price_tick": None,
+            "stop_loss_disabled": False,
+            "trade_plan": trade_plan if isinstance(trade_plan, dict) else {},
             "risk_rules": risk_rules,
         }
 
@@ -100,6 +104,7 @@ def calc_stop_take_levels(portfolio_df, prices_dict):
             risk_rules=risk_rules,
             prices_dict=prices_dict,
             default_sl_mult=row_sl_mult,
+            total_equity=total_equity,
             info=info,
         )
 
@@ -119,7 +124,7 @@ def calc_stop_take_levels(portfolio_df, prices_dict):
         info["trailing_stop"] = round(recent_high - row_trail_mult * atr, 3)
 
         # 信号判定
-        if current <= info["stop_loss"]:
+        if info["stop_loss"] is not None and current <= info["stop_loss"]:
             info["signal"] = "stop_loss"
         elif any(t["triggered"] for t in info["take_profit_tiers"]):
             info["signal"] = "take_profit"
@@ -133,27 +138,46 @@ def calc_stop_take_levels(portfolio_df, prices_dict):
     return results
 
 
-def _resolve_stop_loss_price(*, code, market, buy_date, current, cost, atr, risk_rules, prices_dict, default_sl_mult, info):
-    strategy = risk_rules.get("stop_loss_strategy", "atr")
+def _resolve_stop_loss_price(*, code, market, buy_date, current, cost, atr, risk_rules, prices_dict, default_sl_mult, total_equity, info):
+    strategy = info.get("stop_loss_strategy", "atr")
+    stop_price = resolve_stop_loss_price(
+        strategy,
+        code=code,
+        market=market,
+        buy_date=buy_date,
+        current=current,
+        cost=cost,
+        quantity=info.get("quantity", 0),
+        atr=atr,
+        risk_rules=risk_rules,
+        prices_dict=prices_dict,
+        default_sl_mult=default_sl_mult,
+        total_equity=total_equity,
+        info=info,
+    )
+    if stop_price is not None:
+        return stop_price
 
-    if strategy == "entry_day_low_guard":
-        tick_size = _resolve_price_tick(market, risk_rules)
-        info["entry_date"] = buy_date or None
-        info["price_tick"] = tick_size
+    if info.get("stop_loss_disabled"):
+        return None
 
-        if buy_date:
-            entry_day_low = _get_entry_day_low(code, buy_date, prices_dict)
-            if entry_day_low is not None:
-                info["entry_day_low"] = entry_day_low
-                buffer_ticks = int(risk_rules.get("entry_day_low_buffer_ticks", 5) or 5)
-                stop_price = entry_day_low - buffer_ticks * tick_size
-                return round(stop_price, 3)
-
-    # 默认 ATR 止损；自定义策略缺数据时也回退到 ATR
     info["stop_loss_strategy"] = "atr"
-    if cost > 0:
-        return round(cost - default_sl_mult * atr, 3)
-    return round(current - default_sl_mult * atr, 3)
+    return resolve_stop_loss_price(
+        "atr",
+        current=current,
+        cost=cost,
+        atr=atr,
+        default_sl_mult=default_sl_mult,
+        info=info,
+    )
+
+
+def _resolve_stop_loss_strategy(trade_plan, risk_rules):
+    if isinstance(trade_plan, dict):
+        strategy = str(trade_plan.get("stop_loss_strategy", "") or "").strip()
+        if strategy:
+            return strategy
+    return str(risk_rules.get("stop_loss_strategy", "atr") or "atr").strip()
 
 
 def _resolve_take_profit_tiers(risk_rules, base_price, tp_mult):
@@ -172,32 +196,6 @@ def _resolve_take_profit_tiers(risk_rules, base_price, tp_mult):
             return tiers
 
     return [(pct * tp_mult, ratio) for pct, ratio in TAKE_PROFIT_TIERS]
-def _get_entry_day_low(code, entry_date, prices_dict):
-    df = prices_dict.get(code)
-    if df is None or df.empty:
-        df = get_stock_prices(code, entry_date, entry_date)
-    if df is None or df.empty:
-        return None
-
-    local = df.copy()
-    if "date" in local.columns:
-        local["date"] = pd.to_datetime(local["date"]).dt.strftime("%Y%m%d")
-        matched = local[local["date"] == str(entry_date)]
-        if not matched.empty:
-            return float(matched["low"].astype(float).iloc[-1])
-
-    return None
-
-
-def _resolve_price_tick(market, risk_rules):
-    configured = risk_rules.get("price_tick")
-    if configured is not None:
-        return float(configured)
-
-    # 当前项目支持的市场先统一默认 0.01；特殊品种可在 risk_rules 中显式覆盖。
-    if market in {"上海", "深圳", "沪港通", "深港通"}:
-        return 0.01
-    return 0.01
 
 
 def check_circuit_breaker(portfolio_df, prices_dict):

@@ -190,7 +190,10 @@ def _format_stop_loss_basis(sl):
     strategy = sl.get("stop_loss_strategy", "atr")
     if strategy == "entry_day_low_guard" and sl.get("entry_day_low") is not None:
         tick_size = float(sl.get("price_tick") or 0.01)
-        buffer_ticks = int(sl.get("risk_rules", {}).get("entry_day_low_buffer_ticks", 5) or 5)
+        params = sl.get("risk_rules", {}).get("stop_loss_params", {})
+        if not isinstance(params, dict):
+            params = {}
+        buffer_ticks = int(params.get("buffer_ticks", sl.get("risk_rules", {}).get("entry_day_low_buffer_ticks", 5)) or 5)
         return (
             f"买入日{sl.get('entry_date', 'N/A')}最低{sl['entry_day_low']:.3f} - "
             f"{buffer_ticks}个价位({tick_size:.2f}) = 止损价{sl['stop_loss']:.3f}"
@@ -458,7 +461,7 @@ def build_risk_snapshot(total_equity):
     pos_result = check_positions(portfolio_df, total_equity, market_vol, market_index_name)
 
     # 6. 第二道防线
-    sl_levels = calc_stop_take_levels(portfolio_df, prices_dict)
+    sl_levels = calc_stop_take_levels(portfolio_df, prices_dict, total_equity=total_equity)
     cb_result = check_circuit_breaker(portfolio_df, prices_dict)
 
     # 7. 第三道防线

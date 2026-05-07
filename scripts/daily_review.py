@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT_DIR))
 
 from risk_control.scripts.risk_report import build_risk_snapshot, export_risk_snapshot
 from risk_control.signals.alert import classify_alerts
-from shared.data_provider import get_benchmark_prices, get_eastmoney_news, get_stock_prices, get_sw_sector_returns
+from shared.data_provider import get_benchmark_prices, get_eastmoney_news, get_stock_prices, get_sw_sector_returns, get_data_degradations, clear_data_degradations
 from shared.store import get_account, get_today_trades, get_watchlist, save_output
 from watchlist_signals import (
     clear_inactive_signal_records as clear_inactive_watch_signal_records,
@@ -197,6 +197,12 @@ def summarize_holdings(snapshot):
         pnl = ((current - cost) / cost) if cost else 0.0
         stop = stop_map.get(code, {})
         signal = stop.get("signal", "hold")
+        trade_plan = row.get("trade_plan", {})
+        plan_strategy = ""
+        plan_note = ""
+        if isinstance(trade_plan, dict):
+            plan_strategy = str(trade_plan.get("stop_loss_strategy", "") or "").strip()
+            plan_note = str(trade_plan.get("plan_note", "") or "").strip()
         records.append({
             "code": code,
             "name": row["name"],
@@ -204,9 +210,14 @@ def summarize_holdings(snapshot):
             "pnl_pct": pnl,
             "signal": signal,
             "current_price": current,
+            "stop_loss_strategy": stop.get("stop_loss_strategy", plan_strategy or "atr"),
+            "plan_note": plan_note,
         })
+        plan_text = f"计划{plan_strategy}" if plan_strategy else "计划未固化"
+        note_text = f"；备注{plan_note}" if plan_note else ""
         lines.append(
-            f"- {row['name']}({code}) 仓位{weight:.1%}，浮盈亏{pnl:+.1%}，现价{current:.2f}，信号{signal}"
+            f"- {row['name']}({code}) 仓位{weight:.1%}，浮盈亏{pnl:+.1%}，现价{current:.2f}，"
+            f"信号{signal}，{plan_text}{note_text}"
         )
 
     danger_names = [item["name"] for item in snapshot["alert_groups"].get("danger", [])]
@@ -347,20 +358,30 @@ def render_prompt(context):
     watchlist = context["structured"]["watchlist"]
     trades = context["structured"]["today_trades"]
     actions = context["structured"]["next_actions"]
+    degradations = context.get("data_degradations", [])
 
     sections = [
         f"# 每日复盘输入包 {context['review_date']}",
         "",
+    ]
+
+    if degradations:
+        sections.append("**注意：以下数据源降级，部分数据为缓存值（可能非最新）：**")
+        for d in degradations[:5]:
+            sections.append(f"- {d}")
+        sections.append("")
+
+    sections.extend([
         "你是我的A股/港股交易复盘助手。请基于下面的结构化信息，输出一份晚间复盘报告。",
         "",
         "输出要求：",
         "1. 先写结论，再写证据，不要空话。",
         "2. 区分持仓处理、观察名单、明日动作三部分。",
         "3. 对卖出/止损/止盈建议，要写出触发依据。",
-        "4. 对观察名单，只提示“是否接近或触发买点”，不要替我直接下结论重仓买入。",
+        "4. 对观察名单，只提示\u201c是否接近或触发买点\u201d，不要替我直接下结论重仓买入。",
         "",
         "## 市场",
-    ]
+    ])
     sections.extend(f"- {row['name']} 收于 {row['close']:.2f}，日涨跌 {_fmt_pct(row['day_return'])}" for row in market["benchmarks"])
     sections.append("")
     sections.append("### 新闻")
@@ -400,12 +421,21 @@ def render_report(context):
     portfolio = context["structured"]["portfolio"]
     watchlist = context["structured"]["watchlist"]
     actions = context["structured"]["next_actions"]
+    degradations = context.get("data_degradations", [])
 
     lines = [
         f"# 每日复盘 {context['review_date']}",
         "",
-        "## 今日结论",
     ]
+
+    # 数据降级提示（置顶）
+    if degradations:
+        lines.append("> **数据降级提示**: 以下数据源不可用，部分数据使用缓存替代，可能非最新：")
+        for d in degradations[:5]:
+            lines.append(f"> - {d}")
+        lines.append("")
+
+    lines.append("## 今日结论")
     if portfolio["danger_names"]:
         lines.append(f"- 持仓风险优先级最高：{', '.join(portfolio['danger_names'])}")
     elif watchlist["triggered"]:
@@ -461,10 +491,18 @@ def build_context(review_date, snapshot):
     watchlist_summary = evaluate_watchlist(review_date)
     actions = build_action_plan(snapshot, trade_summary, watchlist_summary)
 
+    # 收集数据降级信息
+    degradations = get_data_degradations()
+    degradation_lines = []
+    if degradations:
+        for source, scope, reason in degradations:
+            degradation_lines.append(f"{source}/{scope}: {reason}")
+
     return {
         "review_date": review_date,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "artifacts": {},
+        "data_degradations": degradation_lines,
         "structured": {
             "market": {
                 "benchmarks": market_context["benchmarks"],
@@ -488,6 +526,7 @@ def main():
     parser.add_argument("--equity", type=float, default=None, help="总权益，不传则从 portfolio.toml 读取")
     args = parser.parse_args()
 
+    clear_data_degradations()
     review_date = normalize_review_date(args.date)
     equity = args.equity
     if equity is None:

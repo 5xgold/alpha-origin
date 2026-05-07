@@ -17,6 +17,7 @@ import atexit
 import re
 from pathlib import Path
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 import pandas as pd
 import baostock as bs
 import requests
@@ -237,12 +238,66 @@ from shared.config import CACHE_DIR, CACHE_EXPIRY_DAYS, SECTOR_CACHE_DAYS, FUTU_
 # baostock 生命周期
 # ============================================================
 _bs_logged_in = False
+_bs_unavailable = False  # 标记 baostock 不可用，避免重复超时
+
+# baostock 调用超时（秒）— 影响 connect + recv
+_BS_TIMEOUT = int(os.getenv("BS_TIMEOUT", "30"))
+
+# ============================================================
+# 数据降级追踪
+# ============================================================
+_data_degradations = []  # [(source, scope, reason)]
+
+
+def _record_degradation(source: str, scope: str, reason: str = ""):
+    """记录数据降级事件"""
+    entry = (source, scope, reason)
+    if entry not in _data_degradations:
+        _data_degradations.append(entry)
+
+
+def get_data_degradations() -> list:
+    """获取本次会话的数据降级记录，供报告使用"""
+    return list(_data_degradations)
+
+
+def clear_data_degradations():
+    """清空降级记录（每次生成报告前调用）"""
+    _data_degradations.clear()
 
 
 def _ensure_bs_login():
-    global _bs_logged_in
+    global _bs_logged_in, _bs_unavailable
+    if _bs_unavailable:
+        raise RuntimeError("baostock 不可用（本次会话已标记跳过）")
     if not _bs_logged_in:
-        bs.login()
+        import socket as _socket
+        # 设置全局 socket 超时，让 baostock 的 connect/recv 不会无限阻塞
+        prev_timeout = _socket.getdefaulttimeout()
+        _socket.setdefaulttimeout(_BS_TIMEOUT)
+        try:
+            result = bs.login()
+            if result.error_code != '0':
+                _bs_unavailable = True
+                _record_degradation("baostock", "全部", f"login 失败: {result.error_msg}")
+                _socket.setdefaulttimeout(prev_timeout)
+                raise RuntimeError(f"baostock login 失败: {result.error_msg}")
+        except RuntimeError:
+            raise
+        except Exception as e:
+            _bs_unavailable = True
+            _record_degradation("baostock", "全部", f"连接超时 ({_BS_TIMEOUT}s)")
+            _socket.setdefaulttimeout(prev_timeout)
+            raise RuntimeError(f"baostock login 异常 (timeout={_BS_TIMEOUT}s): {e}") from e
+        # login 成功后，给已创建的 socket 也设置超时
+        try:
+            import baostock.common.context as bs_ctx
+            sock = getattr(bs_ctx, "default_socket", None)
+            if sock is not None:
+                sock.settimeout(_BS_TIMEOUT)
+        except Exception:
+            pass
+        _socket.setdefaulttimeout(prev_timeout)
         _bs_logged_in = True
         atexit.register(bs.logout)
 
@@ -250,6 +305,23 @@ def _ensure_bs_login():
 # ============================================================
 # 内部工具函数
 # ============================================================
+
+
+def _run_with_timeout(fn, timeout=None):
+    """在线程池中执行 fn()，超时则抛出 TimeoutError。
+
+    baostock 内部使用阻塞 socket，signal.alarm 在主线程可用但不适合
+    多线程场景，这里用 ThreadPoolExecutor 做超时控制。
+    """
+    if timeout is None:
+        timeout = _BS_TIMEOUT
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(fn)
+        try:
+            return future.result(timeout=timeout)
+        except FuturesTimeoutError:
+            raise TimeoutError(f"baostock 调用超时 ({timeout}s)")
+
 
 def _to_bs_code(code_str):
     """A股代码 → baostock 格式 (sh.600519 / sz.000001)"""
@@ -455,6 +527,33 @@ def _fetch_neodata_a_index_snapshot(benchmark_index: str) -> pd.DataFrame:
     return _empty_benchmark_df()
 
 
+def _fetch_neodata_index_kline(benchmark_index: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """用 NeoData 拉取 A 股指数历史 K 线（近期行情）"""
+    _INDEX_NAMES = {
+        "000001": "上证指数", "000300": "沪深300", "000905": "中证500",
+        "399001": "深证成指", "399006": "创业板指",
+    }
+    name = _INDEX_NAMES.get(str(benchmark_index), str(benchmark_index))
+    query = f"{name} 近期行情 日K线"
+    try:
+        result = _call_neodata(query)
+    except Exception:
+        return _empty_benchmark_df()
+
+    recall = result.get("data", {}).get("apiData", {}).get("apiRecall", [])
+    for item in recall:
+        item_type = item.get("type", "")
+        if "历史走势" in item_type:
+            df = _neo_parse_kline(item.get("content", ""))
+            if not df.empty:
+                start_ts = pd.to_datetime(start_date)
+                end_ts = pd.to_datetime(end_date)
+                df = df[(df["date"] >= start_ts) & (df["date"] <= end_ts)]
+                if not df.empty:
+                    return df
+    return _empty_benchmark_df()
+
+
 # ============================================================
 # ETF 行业分类（从 brinson.py 迁移）
 # ============================================================
@@ -599,6 +698,7 @@ def get_stock_prices(code, start_date, end_date, adjust="qfq"):
         if cache_file.exists():
             cached_df = _read_cached_frame(cache_file)
             if not cached_df.empty:
+                _record_degradation("stock_prices", code_str, "回退到缓存")
                 print(f"警告: 获取 {code_str} 实时行情失败，回退到已有缓存: {cache_file.name}")
                 return cached_df
 
@@ -606,9 +706,11 @@ def get_stock_prices(code, start_date, end_date, adjust="qfq"):
         if fallback_df is None:
             fallback_df, fallback_file = _load_latest_matching_cache(f"{code_str}_*_*_*.csv", subdir="stocks")
         if fallback_df is not None:
+            _record_degradation("stock_prices", code_str, "回退到历史缓存")
             print(f"警告: 获取 {code_str} 实时行情失败，回退到最近缓存: {fallback_file.name}")
             return fallback_df
 
+        _record_degradation("stock_prices", code_str, "无数据")
         print(f"警告: 获取 {code_str} 行情失败（所有数据源）: {e}")
         return _EMPTY_PRICE_DF.copy()
 
@@ -633,17 +735,21 @@ def _fetch_a_stock_prices(code_str, start_date, end_date, adjust="qfq"):
     }
     adjustflag = adjust_map.get(adjust, "1")  # 默认前复权
 
-    rs = bs.query_history_k_data_plus(
-        bs_code,
-        "date,open,high,low,close,volume",
-        start_date=_to_bs_date(start_date),
-        end_date=_to_bs_date(end_date),
-        frequency="d",
-        adjustflag=adjustflag,
-    )
-    rows = []
-    while (rs.error_code == '0') and rs.next():
-        rows.append(rs.get_row_data())
+    def _query():
+        rs = bs.query_history_k_data_plus(
+            bs_code,
+            "date,open,high,low,close,volume",
+            start_date=_to_bs_date(start_date),
+            end_date=_to_bs_date(end_date),
+            frequency="d",
+            adjustflag=adjustflag,
+        )
+        rows = []
+        while (rs.error_code == '0') and rs.next():
+            rows.append(rs.get_row_data())
+        return rows
+
+    rows = _run_with_timeout(_query)
     df = pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -800,21 +906,25 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
             try:
                 day_df = _empty_benchmark_df()
                 _ensure_bs_login()
-                for prefix in ['sh', 'sz']:
-                    bs_code = f"{prefix}.{benchmark_index}"
-                    rs = bs.query_history_k_data_plus(
-                        bs_code,
-                        "date,open,high,low,close,volume",
-                        start_date=_to_bs_date(missing_date),
-                        end_date=_to_bs_date(missing_date),
-                        frequency="d",
-                    )
-                    rows = []
-                    while (rs.error_code == '0') and rs.next():
-                        rows.append(rs.get_row_data())
-                    if rows:
-                        day_df = pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
-                        break
+
+                def _query_day(bm_idx=benchmark_index, md=missing_date):
+                    for prefix in ['sh', 'sz']:
+                        bs_code = f"{prefix}.{bm_idx}"
+                        rs = bs.query_history_k_data_plus(
+                            bs_code,
+                            "date,open,high,low,close,volume",
+                            start_date=_to_bs_date(md),
+                            end_date=_to_bs_date(md),
+                            frequency="d",
+                        )
+                        rows = []
+                        while (rs.error_code == '0') and rs.next():
+                            rows.append(rs.get_row_data())
+                        if rows:
+                            return pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
+                    return _empty_benchmark_df()
+
+                day_df = _run_with_timeout(_query_day, timeout=15)
                 day_df = _normalize_ohlcv_frame(day_df)
                 if not day_df.empty:
                     series_df = _merge_benchmark_series(series_df, day_df)
@@ -827,26 +937,41 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
             if not _find_missing_benchmark_dates(sliced, start_date, end_date):
                 return sliced
 
+    # NeoData 指数 K 线（优先于 baostock，覆盖近期数据）
+    if "." not in str(benchmark_index):
+        try:
+            neo_df = _fetch_neodata_index_kline(str(benchmark_index), start_date, end_date)
+            if not neo_df.empty:
+                series_df = _merge_benchmark_series(series_df, neo_df)
+                _save_benchmark_series(series_df, benchmark_index)
+                sliced = _slice_benchmark_series(series_df, start_date, end_date)
+                if not _find_missing_benchmark_dates(sliced, start_date, end_date):
+                    return sliced
+        except Exception:
+            pass
+
     try:
         _ensure_bs_login()
 
         # 尝试 sh/sz 两个前缀
-        df = None
-        for prefix in ['sh', 'sz']:
-            bs_code = f"{prefix}.{benchmark_index}"
-            rs = bs.query_history_k_data_plus(
-                bs_code,
-                "date,open,high,low,close,volume",
-                start_date=_to_bs_date(start_date),
-                end_date=_to_bs_date(end_date),
-                frequency="d",
-            )
-            rows = []
-            while (rs.error_code == '0') and rs.next():
-                rows.append(rs.get_row_data())
-            if rows:
-                df = pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
-                break
+        def _query_range(bm_idx=benchmark_index, sd=start_date, ed=end_date):
+            for prefix in ['sh', 'sz']:
+                bs_code = f"{prefix}.{bm_idx}"
+                rs = bs.query_history_k_data_plus(
+                    bs_code,
+                    "date,open,high,low,close,volume",
+                    start_date=_to_bs_date(sd),
+                    end_date=_to_bs_date(ed),
+                    frequency="d",
+                )
+                rows = []
+                while (rs.error_code == '0') and rs.next():
+                    rows.append(rs.get_row_data())
+                if rows:
+                    return pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
+            return None
+
+        df = _run_with_timeout(_query_range)
 
         if df is None or df.empty:
             raise RuntimeError(f"获取基准指数 {benchmark_index} 失败")
@@ -867,6 +992,7 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
         if cache_file.exists():
             cached_df = _read_cached_frame(cache_file)
             if not cached_df.empty:
+                _record_degradation("benchmark", benchmark_index, "回退到缓存")
                 print(f"警告: 获取基准 {benchmark_index} 实时行情失败，回退到已有缓存: {cache_file.name}")
                 series_df = _merge_benchmark_series(series_df, cached_df)
                 _save_benchmark_series(series_df, benchmark_index)
@@ -875,11 +1001,13 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
         series_df = _load_benchmark_series(benchmark_index)
         sliced = _slice_benchmark_series(series_df, start_date, end_date)
         if not sliced.empty:
+            _record_degradation("benchmark", benchmark_index, "回退到本地时序缓存")
             print(f"警告: 获取基准 {benchmark_index} 实时行情失败，回退到本地时序缓存")
             return sliced
 
         fallback_df, fallback_file = _load_latest_matching_cache(f"benchmark_{benchmark_index}_*.csv")
         if fallback_df is not None:
+            _record_degradation("benchmark", benchmark_index, "回退到历史缓存")
             print(f"警告: 获取基准 {benchmark_index} 实时行情失败，回退到最近缓存: {fallback_file.name}")
             series_df = _merge_benchmark_series(series_df, fallback_df)
             _save_benchmark_series(series_df, benchmark_index)
@@ -1090,14 +1218,19 @@ def get_stock_sector(code, name=""):
     # baostock 获取行业（返回国标分类）
     try:
         _ensure_bs_login()
-        rs = bs.query_stock_industry()
-        gb_sector = "其他"
-        while (rs.error_code == '0') and rs.next():
-            row = rs.get_row_data()
-            # row: [updateDate, code, code_name, industry, industryClassification]
-            if len(row) >= 4 and row[1].endswith(code_str):
-                gb_sector = row[3] if row[3] else "其他"
-                break
+
+        def _query_industry(cs=code_str):
+            rs = bs.query_stock_industry()
+            gb = "其他"
+            while (rs.error_code == '0') and rs.next():
+                row = rs.get_row_data()
+                # row: [updateDate, code, code_name, industry, industryClassification]
+                if len(row) >= 4 and row[1].endswith(cs):
+                    gb = row[3] if row[3] else "其他"
+                    break
+            return gb
+
+        gb_sector = _run_with_timeout(_query_industry, timeout=20)
 
         sector = _map_gb_to_sw(gb_sector)
         cache_file.write_text(json.dumps({"sector": sector, "code": code_str, "gb_sector": gb_sector}, ensure_ascii=False))
@@ -1320,12 +1453,20 @@ def get_index_constituents(benchmark_index):
     query_fn = query_map.get(benchmark_index)
 
     if query_fn:
-        rs = query_fn()
-        while (rs.error_code == '0') and rs.next():
-            row = rs.get_row_data()
-            # row[1] = "sh.600000" 格式
-            if len(row) >= 2:
-                codes.append(row[1].split(".")[-1])
+        def _query_constituents(fn=query_fn):
+            result = []
+            rs = fn()
+            while (rs.error_code == '0') and rs.next():
+                row = rs.get_row_data()
+                # row[1] = "sh.600000" 格式
+                if len(row) >= 2:
+                    result.append(row[1].split(".")[-1])
+            return result
+
+        try:
+            codes = _run_with_timeout(_query_constituents)
+        except (TimeoutError, Exception) as e:
+            print(f"  警告: 获取指数 {benchmark_index} 成分股超时: {e}")
         return codes
 
     # 通用方案：query_stock_basic 获取全量后无法按指数筛选

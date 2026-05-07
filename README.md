@@ -44,6 +44,11 @@ vim .env                                   # 配置 API 密钥（可选）
 - `[[holdings]].risk_rules`：覆盖默认止损/止盈/移动止损参数
 - `[[watchlist]].signal_rules`：给观察列表插件传入自定义参数
 
+持仓止损策略目前支持：
+- `atr`：默认，按 `成本 - N×ATR` 计算
+- `entry_day_low_guard`：按买入日最低价下方若干 tick 止损
+- `equity_risk_budget`：单票最多亏总权益 2%，仓位越大止损越紧
+
 ## 系统架构
 
 ```
@@ -147,8 +152,24 @@ cd risk_control
 
 #### 第二道：止损止盈（事中）
 - 个股止损 = 成本 - 2×ATR
+- 可选固定风险预算止损：单票最多亏总权益 2%
+  例如 10% 仓位最多亏 20%，20% 仓位最多亏 10%
 - 分批止盈：涨15%减1/3，涨30%再减1/3，剩余移动止损
 - 组合回撤熔断：日>3% 预警 / 周>5% 减仓50% / 月>8% 清仓
+
+启用示例：
+
+```toml
+[[holdings]]
+code = "000001"
+name = "平安银行"
+market = "深圳"
+quantity = 1000
+cost_price = 12.5
+trade_plan = {status = "active", stop_loss_strategy = "equity_risk_budget", plan_note = "单票最多亏总权益2%"}
+```
+
+如果总权益是 50 万，这笔持仓建仓成本是 5 万，则仓位占比 10%，允许最大亏损比例为 `2% / 10% = 20%`，止损价约为 `成本价 × 0.8`。
 
 #### 第三道：异常检测（事后）
 
@@ -178,7 +199,6 @@ cd risk_control
 ./quickstart.sh earnings <PDF> 601216      # 财报摘要
 ```
 
-技术栈：DeepSeek / OpenAI 兼容 API + Jinja2 模板 + 本地数据管道
 
 ### ~~模块4：环境分类模型~~ — 暂不开发
 

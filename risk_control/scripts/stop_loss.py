@@ -73,6 +73,8 @@ def calc_stop_take_levels(portfolio_df, prices_dict, total_equity=None):
             "entry_date": None,
             "entry_day_low": None,
             "price_tick": None,
+            "position_weight": None,
+            "max_loss_pct": None,
             "stop_loss_disabled": False,
             "trade_plan": trade_plan if isinstance(trade_plan, dict) else {},
             "risk_rules": risk_rules,

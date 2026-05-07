@@ -18,12 +18,9 @@ update_time = "2026-01-01 09:00" # (可选) 更新时间，仅供记录
 #     只要 trade_plan.stop_loss_strategy 或 risk_rules.stop_loss_strategy 使用
 #     entry_day_low_guard / 未来其他入场日锚定策略，
 #     就必须显式填写 buy_date，方便 AI/agent 明确识别
-# - trade_plan: (可选) 已确认的交易计划，建议 AI 优先维护这一层
-#     status = "active"            计划状态
-#     stop_loss_strategy = "..."   当前确认采用的止损策略（如 atr / entry_day_low_guard）
-#     plan_note = "..."            人类可读备注
-#     executor = "manual"          执行方式，现阶段建议 manual
-#     updated_at = "2026-05-07"    最近确认日期
+# - trade_plan: (可选) 已确认的交易计划，使用内联 table，建议 AI 优先维护这一层
+#     trade_plan = {status = "active", stop_loss_strategy = "...", plan_note = "..."}
+#     其中 stop_loss_strategy 可选 atr / entry_day_low_guard / equity_risk_budget
 # - familiarity: (可选) 熟悉程度评估，影响个股仓位上限
 #     business_model = true       商业模式优秀
 #     shareholder_friendly = true 对中小投资者态度友好
@@ -45,7 +42,7 @@ quantity = 100
 cost_price = 1800.0
 # 必填：trade_plan.stop_loss_strategy = "entry_day_low_guard" 依赖 buy_date
 buy_date = "20240102"
-trade_plan = {status = "active", stop_loss_strategy = "entry_day_low_guard", plan_note = "跌破买入日低点下5tick执行", executor = "manual", updated_at = "2026-05-07"}
+trade_plan = {status = "active", stop_loss_strategy = "entry_day_low_guard", plan_note = "跌破买入日低点下5tick执行"}
 familiarity = {business_model = true, shareholder_friendly = true, valuation_low = false, trend_up = true}
 risk_rules = {stop_loss_params = {buffer_ticks = 5}, trailing_stop_atr_multiplier = 2.5}
 
@@ -55,6 +52,7 @@ name = "平安银行"
 market = "深圳"
 quantity = 1000
 cost_price = 12.5
+trade_plan = {status = "active", stop_loss_strategy = "equity_risk_budget", plan_note = "单票最多亏总权益2%"}
 
 [[holdings]]
 code = "00700"

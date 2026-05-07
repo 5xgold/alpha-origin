@@ -14,7 +14,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 
 _BUY_DATE_PATTERN = re.compile(r"^\d{8}$")
-_VALID_STOP_LOSS_STRATEGIES = {"atr", "entry_day_low_guard"}
+_VALID_STOP_LOSS_STRATEGIES = {"atr", "entry_day_low_guard", "equity_risk_budget"}
 _BUY_DATE_REQUIRED_STRATEGIES = {"entry_day_low_guard"}
 
 
@@ -150,10 +150,10 @@ def load_portfolio_from_toml(toml_path: str = None) -> pd.DataFrame:
 def _normalize_trade_plan(trade_plan):
     normalized = dict(trade_plan)
     normalized["status"] = str(normalized.get("status", "active") or "active").strip()
-    normalized["executor"] = str(normalized.get("executor", "manual") or "manual").strip()
     normalized["plan_note"] = str(normalized.get("plan_note", "") or "").strip()
     normalized["stop_loss_strategy"] = str(normalized.get("stop_loss_strategy", "") or "").strip()
-    normalized["updated_at"] = str(normalized.get("updated_at", "") or "").strip()
+    normalized.pop("executor", None)
+    normalized.pop("updated_at", None)
     return normalized
 
 

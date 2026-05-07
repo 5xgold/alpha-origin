@@ -33,7 +33,7 @@ quantity = 100
 cost_price = 1800.0
 # 必填：trade_plan.stop_loss_strategy = "entry_day_low_guard" 依赖 buy_date
 buy_date = "20240102"
-trade_plan = {status = "active", stop_loss_strategy = "entry_day_low_guard", plan_note = "跌破买入日低点下5tick执行", executor = "manual", updated_at = "2026-05-07"}
+trade_plan = {status = "active", stop_loss_strategy = "entry_day_low_guard", plan_note = "跌破买入日低点下5tick执行"}
 risk_rules = {stop_loss_params = {buffer_ticks = 5}, trailing_stop_atr_multiplier = 2.5}
 
 [[holdings]]
@@ -73,12 +73,10 @@ notes = "回调或突破后再看"
 - `trade_plan`: 可选，已确认的交易计划
   - `status`: 计划状态，默认 `active`
   - `stop_loss_strategy`: 当前确认采用的止损策略，风控模块优先读取这一层
-    - 支持 `atr` / `entry_day_low_guard`
+    - 支持 `atr` / `entry_day_low_guard` / `equity_risk_budget`
   - `plan_note`: 人类可读备注，方便每日复盘展示
-  - `executor`: 执行方式，现阶段建议 `manual`
-  - `updated_at`: 最近确认日期
-- `risk_rules`: 可选，自定义风控覆盖参数
-  - `stop_loss_strategy = "atr" | "entry_day_low_guard"`：兼容旧写法；如果 `trade_plan.stop_loss_strategy` 存在，则以后者为准
+- `risk_rules`: 可选，自定义风控覆盖参数，推荐使用内联 table，例如 `risk_rules = {...}`
+  - `stop_loss_strategy = "atr" | "entry_day_low_guard" | "equity_risk_budget"`：兼容旧写法；如果 `trade_plan.stop_loss_strategy` 存在，则以后者为准
   - `stop_loss_atr_multiplier`
   - `stop_loss_params = {buffer_ticks = 5}`：推荐新写法，策略私有参数放这里
   - `entry_day_low_buffer_ticks = 5`：兼容旧写法；仅 `entry_day_low_guard` 使用

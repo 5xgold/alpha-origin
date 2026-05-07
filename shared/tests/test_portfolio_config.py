@@ -18,7 +18,7 @@ market = "上海"
 quantity = 10
 cost_price = 1800
 buy_date = "20240102"
-trade_plan = {status = "active", stop_loss_strategy = "entry_day_low_guard", plan_note = "test", executor = "manual"}
+trade_plan = {status = "active", stop_loss_strategy = "entry_day_low_guard", plan_note = "test"}
 risk_rules = {stop_loss_params = {buffer_ticks = 5}}
 """
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -1,6 +1,9 @@
 """止损子策略注册表。"""
 
 from risk_control.signals.strategies.stop_loss_modes.atr_stop import resolve_stop_price as resolve_atr_stop
+from risk_control.signals.strategies.stop_loss_modes.equity_risk_budget import (
+    resolve_stop_price as resolve_equity_risk_budget_stop,
+)
 from risk_control.signals.strategies.stop_loss_modes.entry_day_low_guard import (
     resolve_stop_price as resolve_entry_day_low_guard_stop,
 )
@@ -8,6 +11,7 @@ from risk_control.signals.strategies.stop_loss_modes.entry_day_low_guard import 
 
 _STOP_LOSS_MODE_REGISTRY = {
     "atr": resolve_atr_stop,
+    "equity_risk_budget": resolve_equity_risk_budget_stop,
     "entry_day_low_guard": resolve_entry_day_low_guard_stop,
 }
 

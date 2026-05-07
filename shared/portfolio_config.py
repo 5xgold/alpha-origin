@@ -6,10 +6,14 @@
 
 import sys
 from pathlib import Path
+import re
 import pandas as pd
 
 # Add parent directory to path
 sys.path.append(str(Path(__file__).parent.parent))
+
+
+_BUY_DATE_PATTERN = re.compile(r"^\d{8}$")
 
 
 def _load_toml(toml_path: str = None) -> dict:
@@ -67,7 +71,7 @@ def load_portfolio_from_toml(toml_path: str = None) -> pd.DataFrame:
 
     Returns:
         DataFrame with columns:
-        code, name, market, quantity, cost_price, familiarity_detail, risk_rules
+        code, name, market, quantity, cost_price, buy_date, familiarity_detail, risk_rules
 
     Raises:
         FileNotFoundError: 如果 portfolio.toml 不存在
@@ -98,11 +102,19 @@ def load_portfolio_from_toml(toml_path: str = None) -> pd.DataFrame:
     df["market"] = df["market"].astype(str)
     df["quantity"] = pd.to_numeric(df["quantity"])
     df["cost_price"] = pd.to_numeric(df["cost_price"])
+    buy_date = df.get("buy_date")
+    if buy_date is None:
+        df["buy_date"] = ""
+    else:
+        df["buy_date"] = buy_date.fillna("").astype(str)
 
     # 解析熟悉程度评估（familiarity dict），向后兼容 conviction
     familiarity_details = []
     risk_rules_list = []
     for h in holdings:
+        code = str(h.get("code", "unknown"))
+        name = str(h.get("name", "unknown"))
+        buy_date = str(h.get("buy_date", "") or "").strip()
         fam = h.get("familiarity", {})
         if not fam and h.get("conviction", False):
             # conviction = true 向后兼容 → 视为四维度全通过
@@ -113,15 +125,35 @@ def load_portfolio_from_toml(toml_path: str = None) -> pd.DataFrame:
         familiarity_details.append(fam)
         risk_rules = h.get("risk_rules", {})
         if not isinstance(risk_rules, dict):
-            raise ValueError(f"{h.get('code', 'unknown')} 的 risk_rules 必须是 table/dict")
+            raise ValueError(f"{code} 的 risk_rules 必须是 table/dict")
+        _validate_holding_config(code, name, buy_date, risk_rules)
         risk_rules_list.append(risk_rules)
     df["familiarity_detail"] = familiarity_details
     df["risk_rules"] = risk_rules_list
 
     return df[[
-        "code", "name", "market", "quantity", "cost_price",
+        "code", "name", "market", "quantity", "cost_price", "buy_date",
         "familiarity_detail", "risk_rules",
     ]]
+
+
+def _validate_holding_config(code, name, buy_date, risk_rules):
+    strategy = str(risk_rules.get("stop_loss_strategy", "") or "").strip()
+    if strategy != "entry_day_low_guard":
+        return
+
+    if not buy_date:
+        raise ValueError(
+            f"{name}({code}) 启用了 risk_rules.stop_loss_strategy='entry_day_low_guard'，"
+            "但缺少 buy_date。请在对应 [[holdings]] 下补充 "
+            'buy_date = "YYYYMMDD"，例如 buy_date = "20240102"。'
+        )
+
+    if not _BUY_DATE_PATTERN.match(buy_date):
+        raise ValueError(
+            f"{name}({code}) 的 buy_date 格式非法: {buy_date}。"
+            '请使用 YYYYMMDD，例如 "20240102"。'
+        )
 
 
 def load_watchlist_from_toml(toml_path: str = None) -> pd.DataFrame:

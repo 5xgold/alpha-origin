@@ -31,7 +31,9 @@ name = "贵州茅台"
 market = "上海"
 quantity = 100
 cost_price = 1800.0
-risk_rules = {stop_loss_atr_multiplier = 1.8, trailing_stop_atr_multiplier = 2.5}
+# 必填：entry_day_low_guard 依赖 buy_date
+buy_date = "20240102"
+risk_rules = {stop_loss_strategy = "entry_day_low_guard", entry_day_low_buffer_ticks = 5, trailing_stop_atr_multiplier = 2.5}
 
 [[holdings]]
 code = "000001"
@@ -63,8 +65,14 @@ notes = "回调或突破后再看"
   - `深港通` - 港股通（深）
 - `quantity`: 持仓数量（股）
 - `cost_price`: 成本价（元）
+- `buy_date`: 买入日期，格式 `YYYYMMDD`
+  - 当 `risk_rules.stop_loss_strategy = "entry_day_low_guard"` 时必填
+  - 建议 agent 生成 `[[holdings]]` 时显式输出，避免策略校验失败
 - `risk_rules`: 可选，自定义风控覆盖参数
+  - `stop_loss_strategy = "atr" | "entry_day_low_guard"`
   - `stop_loss_atr_multiplier`
+  - `entry_day_low_buffer_ticks = 5`：仅 `entry_day_low_guard` 使用，止损价 = `buy_date` 当日最低价下方 N 个价位
+  - `price_tick = 0.01`（可选，默认 0.01）
   - `trailing_stop_atr_multiplier`
   - `take_profit_tiers = [{trigger_pct = 0.12, sell_ratio = 0.3}, ...]`
 

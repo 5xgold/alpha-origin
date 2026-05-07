@@ -14,6 +14,10 @@ update_time = "2026-01-01 09:00" # (可选) 更新时间，仅供记录
 # - market: 市场（上海/深圳/沪港通/深港通）
 # - quantity: 持仓数量（股）
 # - cost_price: 成本价（元）
+# - buy_date: 买入日期，格式 YYYYMMDD
+#     只要 risk_rules.stop_loss_strategy 使用
+#     entry_day_low_guard / prev_day_low_or_entry_day_low_guard，
+#     就必须显式填写 buy_date，方便 AI/agent 明确识别
 # - familiarity: (可选) 熟悉程度评估，影响个股仓位上限
 #     business_model = true       商业模式优秀
 #     shareholder_friendly = true 对中小投资者态度友好
@@ -33,8 +37,10 @@ name = "贵州茅台"
 market = "上海"
 quantity = 100
 cost_price = 1800.0
+# 必填：entry_day_low_guard 依赖 buy_date
+buy_date = "20240102"
 familiarity = {business_model = true, shareholder_friendly = true, valuation_low = false, trend_up = true}
-risk_rules = {stop_loss_atr_multiplier = 1.8, trailing_stop_atr_multiplier = 2.5}
+risk_rules = {stop_loss_strategy = "entry_day_low_guard", entry_day_low_buffer_ticks = 5, trailing_stop_atr_multiplier = 2.5}
 
 [[holdings]]
 code = "000001"

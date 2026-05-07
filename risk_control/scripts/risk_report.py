@@ -186,6 +186,21 @@ def _fmt_atr_multiplier(v):
     return f"{float(v):.1f}".rstrip("0").rstrip(".")
 
 
+def _format_stop_loss_basis(sl):
+    strategy = sl.get("stop_loss_strategy", "atr")
+    if strategy == "entry_day_low_guard" and sl.get("entry_day_low") is not None:
+        tick_size = float(sl.get("price_tick") or 0.01)
+        buffer_ticks = int(sl.get("risk_rules", {}).get("entry_day_low_buffer_ticks", 5) or 5)
+        return (
+            f"买入日{sl.get('entry_date', 'N/A')}最低{sl['entry_day_low']:.3f} - "
+            f"{buffer_ticks}个价位({tick_size:.2f}) = 止损价{sl['stop_loss']:.3f}"
+        )
+
+    atr = sl.get("atr") or 0
+    sl_mult = _fmt_atr_multiplier(sl.get("stop_loss_atr_multiplier", 2.0))
+    return f"成本{sl['cost_price']:.3f} - {sl_mult}×ATR{atr:.3f} = 止损价{sl['stop_loss']:.3f}"
+
+
 def format_terminal_report(today, portfolio_df, total_equity, pos_result, sl_levels, cb_result, anomaly_result, alert_groups=None):
     """生成终端输出文本"""
     lines = []
@@ -352,11 +367,9 @@ def _generate_suggestions(pos_result, sl_levels, cb_result, anomaly_result):
     # 止损建议
     for sl in sl_levels:
         if sl["signal"] == "stop_loss":
-            atr = sl.get("atr") or 0
-            sl_mult = _fmt_atr_multiplier(sl.get("stop_loss_atr_multiplier", 2.0))
             suggestions.append(
                 f"🔴 {sl['name']}({sl['code']}) 已触及止损 "
-                f"(依据: 成本{sl['cost_price']:.3f} - {sl_mult}×ATR{atr:.3f} = 止损价{sl['stop_loss']:.3f} → 现价{sl['current_price']:.3f} < 止损价)"
+                f"(依据: {_format_stop_loss_basis(sl)} → 现价{sl['current_price']:.3f} < 止损价)"
             )
         elif sl["signal"] == "trailing_stop":
             atr = sl.get("atr") or 0

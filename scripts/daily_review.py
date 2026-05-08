@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT_DIR))
 
 from risk_control.scripts.risk_report import build_risk_snapshot, export_risk_snapshot
 from risk_control.signals.alert import classify_alerts
-from shared.data_provider import get_benchmark_prices, get_eastmoney_news, get_stock_prices, get_sw_sector_returns, get_data_degradations, clear_data_degradations
+from shared.data_provider import get_a_share_market_breadth, get_benchmark_prices, get_eastmoney_news, get_stock_prices, get_sw_sector_returns, get_data_degradations, clear_data_degradations
 from shared.store import get_account, get_today_trades, get_watchlist, save_output
 from watchlist_signals import (
     clear_inactive_signal_records as clear_inactive_watch_signal_records,
@@ -42,10 +42,29 @@ def _fmt_pct(value):
     return f"{value:+.1%}"
 
 
+def _fmt_ymd(date_str):
+    text = str(date_str)
+    if len(text) == 8 and text.isdigit():
+        return f"{text[:4]}-{text[4:6]}-{text[6:]}"
+    return text
+
+
 def _fmt_price(value):
     if value is None or pd.isna(value):
         return "N/A"
     return f"{float(value):.2f}"
+
+
+def _fmt_turnover(value):
+    if value is None or pd.isna(value):
+        return "N/A"
+    return f"{float(value) / 1e8:,.0f}亿"
+
+
+def _fmt_count(value):
+    if value is None or pd.isna(value):
+        return "N/A"
+    return str(int(value))
 
 
 def _latest_close(code, review_date, lookback_days=80):
@@ -72,6 +91,7 @@ def _latest_close(code, review_date, lookback_days=80):
 
 def build_market_context(review_date):
     news = get_eastmoney_news(limit=12)
+    breadth = get_a_share_market_breadth(review_date)
     end_ts = pd.to_datetime(review_date)
     start_5 = (end_ts - pd.Timedelta(days=7)).strftime("%Y%m%d")
     start_20 = (end_ts - pd.Timedelta(days=30)).strftime("%Y%m%d")
@@ -135,11 +155,33 @@ def build_market_context(review_date):
         except Exception as exc:
             print(f"  获取基准 {code} 失败，已跳过: {exc}")
 
+    turnover_rows = breadth.get("turnover_rows", [])
+    limit_rows = breadth.get("limit_rows", [])
+    limit_by_date = {row["date"]: row for row in limit_rows}
+    breadth_lines = []
+    for row in turnover_rows:
+        limit_row = limit_by_date.get(row["date"], {})
+        breadth_lines.append(
+            f"- {row['date']}: 两市成交额{_fmt_turnover(row.get('turnover'))}，"
+            f"涨停{_fmt_count(limit_row.get('limit_up'))}家，"
+            f"跌停{_fmt_count(limit_row.get('limit_down'))}家"
+        )
+    if len(turnover_rows) >= 2:
+        prev = float(turnover_rows[-2].get("turnover") or 0.0)
+        curr = float(turnover_rows[-1].get("turnover") or 0.0)
+        if prev:
+            breadth_lines.append(f"- 成交额较前一交易日{_fmt_pct((curr - prev) / prev)}")
+
     return {
         "news": news,
         "hot_sectors": hot,
         "hot_sector_lines": hot_lines,
         "benchmarks": benchmark_rows,
+        "breadth": {
+            "turnover_rows": turnover_rows,
+            "limit_rows": limit_rows,
+            "lines": breadth_lines,
+        },
     }
 
 
@@ -352,16 +394,69 @@ def build_action_plan(snapshot, trade_summary, watchlist_summary):
     return actions[:6]
 
 
+def build_ai_review_contract(context):
+    structured = context["structured"]
+    portfolio = structured["portfolio"]
+    watchlist = structured["watchlist"]
+    actions = structured["next_actions"]
+    degradations = context.get("data_degradations", [])
+
+    required_checks = [
+        "只使用本 JSON/prompt 中的事实，不重新抓取行情，不新增未出现的交易信号。",
+        "输出中的今日/当日必须指向 review_date，不按外部 AI 运行日期解释。",
+        "持仓处理必须覆盖所有 danger/warning 风控对象；没有对应对象时明确说明无强制处理信号。",
+        "明日计划必须从 next_actions 中归纳，不得凭空生成新的买卖计划。",
+        "观察名单只能判断是否接近或触发买点，不得写成重仓买入或确定性推荐。",
+    ]
+    if degradations:
+        required_checks.insert(0, "结论必须说明数据降级及其影响，不得把缓存数据描述为实时最新。")
+
+    forbidden = [
+        "不得修改或推翻脚本给出的风控信号。",
+        "不得补充本文件之外的新闻、价格、成交额、涨跌停数量。",
+        "不得把观察名单信号升级为确定性买入建议。",
+        "不得输出没有触发依据的止盈、止损、加仓或减仓建议。",
+    ]
+
+    evidence_targets = []
+    for name in portfolio.get("danger_names", []):
+        evidence_targets.append(f"danger 持仓: {name}")
+    for name in portfolio.get("warning_names", []):
+        evidence_targets.append(f"warning 持仓: {name}")
+    for item in watchlist.get("triggered", []):
+        evidence_targets.append(f"观察触发: {item['name']}({item['code']})")
+    if not evidence_targets:
+        evidence_targets.append("无 danger/warning 持仓或观察名单触发，结论需保持克制")
+
+    return {
+        "ai_role": "复盘编辑 + 一致性检查员，不是交易规则引擎",
+        "fact_source": "structured 字段是唯一事实源；prompt 为同一事实源的可读渲染",
+        "review_date": context["review_date"],
+        "required_checks": required_checks,
+        "forbidden": forbidden,
+        "evidence_targets": evidence_targets,
+        "allowed_next_actions": actions,
+        "output_sections": ["今日结论", "市场与热点", "持仓处理", "观察名单", "明日计划"],
+    }
+
+
 def render_prompt(context):
     market = context["structured"]["market"]
     portfolio = context["structured"]["portfolio"]
     watchlist = context["structured"]["watchlist"]
     trades = context["structured"]["today_trades"]
     actions = context["structured"]["next_actions"]
+    contract = context["ai_review_contract"]
     degradations = context.get("data_degradations", [])
 
     sections = [
-        f"# 每日复盘输入包 {context['review_date']}",
+        f"# 每日复盘最终输入包 {context['review_date']}",
+        "",
+        f"- 复盘日期: {_fmt_ymd(context['review_date'])}",
+        f"- 生成时间: {context['generated_at']}",
+        f"- AI 职责: {contract['ai_role']}",
+        "- 使用说明: 外部 AI 只基于本文件输出复盘，不要重新抓取行情；如发现数据降级，必须在结论中说明影响。",
+        "- 日期口径: 本文件所有“今日/当日”均指复盘日期；“前一交易日”指市场数据中列出的上一条交易日。",
         "",
     ]
 
@@ -373,16 +468,38 @@ def render_prompt(context):
 
     sections.extend([
         "你是我的A股/港股交易复盘助手。请基于下面的结构化信息，输出一份晚间复盘报告。",
+        "你的任务是检查脚本结论是否一致，并把事实组织成清晰报告；不要充当新的交易规则引擎。",
         "",
         "输出要求：",
         "1. 先写结论，再写证据，不要空话。",
         "2. 区分持仓处理、观察名单、明日动作三部分。",
         "3. 对卖出/止损/止盈建议，要写出触发依据。",
         "4. 对观察名单，只提示\u201c是否接近或触发买点\u201d，不要替我直接下结论重仓买入。",
+        "5. 引用市场宽度时必须带日期，例如“2026-05-08 两市成交额...” 。",
+        "6. 明日计划只能从“明日动作候选”中归纳，不得新增动作。",
         "",
-        "## 市场",
+        "必须检查：",
+    ])
+    sections.extend(f"- {line}" for line in contract["required_checks"])
+    sections.extend([
+        "",
+        "禁止事项：",
+    ])
+    sections.extend(f"- {line}" for line in contract["forbidden"])
+    sections.extend([
+        "",
+        "必须覆盖的证据对象：",
+    ])
+    sections.extend(f"- {line}" for line in contract["evidence_targets"])
+    sections.extend([
+        "",
+        f"## 市场（复盘日期 {_fmt_ymd(context['review_date'])}）",
     ])
     sections.extend(f"- {row['name']} 收于 {row['close']:.2f}，日涨跌 {_fmt_pct(row['day_return'])}" for row in market["benchmarks"])
+    if market["breadth"]["lines"]:
+        sections.append("")
+        sections.append("### 两日成交额与涨跌停（按交易日对比）")
+        sections.extend(market["breadth"]["lines"])
     sections.append("")
     sections.append("### 新闻")
     sections.extend(f"- {line}" for line in market["news"][:8])
@@ -407,11 +524,7 @@ def render_prompt(context):
     sections.extend(f"- {line}" for line in actions)
     sections.append("")
     sections.append("请输出 Markdown，结构为：")
-    sections.append("1. 今日结论")
-    sections.append("2. 市场与热点")
-    sections.append("3. 持仓处理")
-    sections.append("4. 观察名单")
-    sections.append("5. 明日计划")
+    sections.extend(f"{idx}. {name}" for idx, name in enumerate(contract["output_sections"], start=1))
     return "\n".join(sections)
 
 
@@ -456,6 +569,8 @@ def render_report(context):
     ])
     for row in market["benchmarks"]:
         lines.append(f"- {row['name']}：{_fmt_pct(row['day_return'])}，收于 {row['close']:.2f}")
+    if market["breadth"]["lines"]:
+        lines.extend(market["breadth"]["lines"])
     lines.extend(market["hot_sectors"]["lines"] or ["- 暂无板块强弱数据"])
 
     lines.extend([
@@ -498,7 +613,7 @@ def build_context(review_date, snapshot):
         for source, scope, reason in degradations:
             degradation_lines.append(f"{source}/{scope}: {reason}")
 
-    return {
+    context = {
         "review_date": review_date,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "artifacts": {},
@@ -506,6 +621,7 @@ def build_context(review_date, snapshot):
         "structured": {
             "market": {
                 "benchmarks": market_context["benchmarks"],
+                "breadth": market_context["breadth"],
                 "news": market_context["news"],
                 "hot_sectors": {
                     "rows": market_context["hot_sectors"],
@@ -518,6 +634,8 @@ def build_context(review_date, snapshot):
             "next_actions": actions,
         },
     }
+    context["ai_review_contract"] = build_ai_review_contract(context)
+    return context
 
 
 def main():

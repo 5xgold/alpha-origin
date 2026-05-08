@@ -387,7 +387,7 @@ def _benchmark_series_path(benchmark_index: str) -> Path:
 
 
 def _empty_benchmark_df() -> pd.DataFrame:
-    return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+    return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume", "amount"])
 
 
 def _normalize_ohlcv_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -396,14 +396,14 @@ def _normalize_ohlcv_frame(df: pd.DataFrame) -> pd.DataFrame:
 
     normalized = df.copy()
     normalized["date"] = pd.to_datetime(normalized["date"], errors="coerce")
-    for col in ["open", "high", "low", "close", "volume"]:
+    for col in ["open", "high", "low", "close", "volume", "amount"]:
         if col in normalized.columns:
             normalized[col] = pd.to_numeric(normalized[col], errors="coerce")
         else:
             normalized[col] = pd.NA
 
     normalized = normalized.dropna(subset=["date", "close"])
-    normalized = normalized[["date", "open", "high", "low", "close", "volume"]]
+    normalized = normalized[["date", "open", "high", "low", "close", "volume", "amount"]]
     normalized = normalized.drop_duplicates(subset=["date"], keep="last")
     normalized = normalized.sort_values("date").reset_index(drop=True)
     return normalized
@@ -912,7 +912,7 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
                         bs_code = f"{prefix}.{bm_idx}"
                         rs = bs.query_history_k_data_plus(
                             bs_code,
-                            "date,open,high,low,close,volume",
+                            "date,open,high,low,close,volume,amount",
                             start_date=_to_bs_date(md),
                             end_date=_to_bs_date(md),
                             frequency="d",
@@ -921,7 +921,7 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
                         while (rs.error_code == '0') and rs.next():
                             rows.append(rs.get_row_data())
                         if rows:
-                            return pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
+                            return pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume", "amount"])
                     return _empty_benchmark_df()
 
                 day_df = _run_with_timeout(_query_day, timeout=15)
@@ -959,7 +959,7 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
                 bs_code = f"{prefix}.{bm_idx}"
                 rs = bs.query_history_k_data_plus(
                     bs_code,
-                    "date,open,high,low,close,volume",
+                    "date,open,high,low,close,volume,amount",
                     start_date=_to_bs_date(sd),
                     end_date=_to_bs_date(ed),
                     frequency="d",
@@ -968,7 +968,7 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
                 while (rs.error_code == '0') and rs.next():
                     rows.append(rs.get_row_data())
                 if rows:
-                    return pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
+                    return pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume", "amount"])
             return None
 
         df = _run_with_timeout(_query_range)
@@ -976,7 +976,7 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
         if df is None or df.empty:
             raise RuntimeError(f"获取基准指数 {benchmark_index} 失败")
 
-        for col in ["open", "high", "low", "close", "volume"]:
+        for col in ["open", "high", "low", "close", "volume", "amount"]:
             df[col] = pd.to_numeric(df[col], errors='coerce')
         df['date'] = pd.to_datetime(df['date'])
         df = df.dropna(subset=["close"])
@@ -1430,6 +1430,176 @@ def get_eastmoney_news(limit=20):
     except Exception as e:
         print(f"  获取东方财富快讯失败: {e}")
         return []
+
+
+# ============================================================
+# 公开 API：A 股市场宽度
+# ============================================================
+
+def _get_eastmoney_limit_pool_count(pool_type: str, trade_date: str) -> int | None:
+    """获取东方财富涨停池/跌停池数量。pool_type: zt / dt"""
+    endpoint = {
+        "zt": "getTopicZTPool",
+        "dt": "getTopicDTPool",
+    }[pool_type]
+    try:
+        resp = requests.get(
+            f"https://push2ex.eastmoney.com/{endpoint}",
+            params={
+                "ut": "7eea3edcaed734bea9cbfc24409ed989",
+                "dpt": "wz.ztzt",
+                "Pageindex": 0,
+                "date": str(trade_date),
+                "pagesize": 10000,
+                "sort": "fund:asc" if pool_type == "dt" else "fbt:asc",
+                "_": "1621590489736",
+            },
+            headers={
+                "Referer": "https://quote.eastmoney.com/",
+                "User-Agent": "Mozilla/5.0",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data") or {}
+        pool = data.get("pool")
+        if isinstance(pool, list):
+            return len(pool)
+        if data.get("tc") is not None:
+            return int(data["tc"])
+    except Exception as e:
+        print(f"  获取东方财富{trade_date}{pool_type}池失败: {e}")
+    return None
+
+
+def _market_turnover_rows_from_indices(review_date: str) -> list[dict]:
+    """用沪深主要指数 amount 字段估算两市最近两个交易日成交额。"""
+    end_ts = pd.to_datetime(review_date)
+    start = (end_ts - pd.Timedelta(days=10)).strftime("%Y%m%d")
+    end = end_ts.strftime("%Y%m%d")
+    frames = []
+    for code in ["000001", "399001"]:
+        df = get_benchmark_prices(code, start, end)
+        if df is not None and not df.empty and {"date", "amount"}.issubset(df.columns):
+            frame = df[["date", "amount"]].copy()
+            frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+            frame["amount"] = pd.to_numeric(frame["amount"], errors="coerce")
+            frame = frame.dropna(subset=["date", "amount"])
+        else:
+            frame = pd.DataFrame(columns=["date", "amount"])
+        if frame.empty:
+            frame = _fetch_index_amount_only(code, start, end)
+        if frame.empty:
+            frame = _fetch_eastmoney_index_amount(code, start, end)
+        if not frame.empty:
+            frames.append(frame)
+
+    if not frames:
+        return []
+
+    combined = pd.concat(frames, ignore_index=True)
+    turnover = (
+        combined.groupby("date", as_index=False)["amount"]
+        .sum()
+        .sort_values("date")
+        .tail(2)
+        .reset_index(drop=True)
+    )
+    return [
+        {
+            "date": row["date"].strftime("%Y%m%d"),
+            "turnover": float(row["amount"]),
+        }
+        for _, row in turnover.iterrows()
+    ]
+
+
+def _fetch_index_amount_only(benchmark_index: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """旧缓存没有 amount 时，单独补指数成交额字段。"""
+    try:
+        _ensure_bs_login()
+
+        def _query():
+            for prefix in ["sh", "sz"]:
+                rs = bs.query_history_k_data_plus(
+                    f"{prefix}.{benchmark_index}",
+                    "date,amount",
+                    start_date=_to_bs_date(start_date),
+                    end_date=_to_bs_date(end_date),
+                    frequency="d",
+                )
+                rows = []
+                while (rs.error_code == "0") and rs.next():
+                    rows.append(rs.get_row_data())
+                if rows:
+                    return pd.DataFrame(rows, columns=["date", "amount"])
+            return pd.DataFrame(columns=["date", "amount"])
+
+        df = _run_with_timeout(_query, timeout=15)
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["date", "amount"])
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+        return df.dropna(subset=["date", "amount"]).reset_index(drop=True)
+    except Exception as e:
+        print(f"  获取指数 {benchmark_index} 成交额失败: {e}")
+        return pd.DataFrame(columns=["date", "amount"])
+
+
+def _fetch_eastmoney_index_amount(benchmark_index: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """东方财富补指数成交额，避免 baostock 不可用时缺两市成交额。"""
+    market = "0" if str(benchmark_index).startswith("399") else "1"
+    try:
+        resp = requests.get(
+            "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+            params={
+                "secid": f"{market}.{benchmark_index}",
+                "fields1": "f1,f2,f3,f4,f5,f6",
+                "fields2": "f51,f52,f53,f54,f55,f56,f57",
+                "klt": "101",
+                "beg": str(start_date).replace("-", ""),
+                "end": str(end_date).replace("-", ""),
+                "fqt": "1",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        klines = (resp.json().get("data") or {}).get("klines") or []
+        rows = []
+        for line in klines:
+            parts = line.split(",")
+            if len(parts) < 7:
+                continue
+            rows.append({"date": parts[0], "amount": parts[6]})
+        if not rows:
+            return pd.DataFrame(columns=["date", "amount"])
+        df = pd.DataFrame(rows)
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+        return df.dropna(subset=["date", "amount"]).reset_index(drop=True)
+    except Exception as e:
+        print(f"  东方财富获取指数 {benchmark_index} 成交额失败: {e}")
+        return pd.DataFrame(columns=["date", "amount"])
+
+
+def get_a_share_market_breadth(review_date: str) -> dict:
+    """获取 A 股两日成交额和涨跌停对比。"""
+    turnover_rows = _market_turnover_rows_from_indices(review_date)
+    limit_rows = []
+    for row in turnover_rows:
+        trade_date = row["date"]
+        limit_up = _get_eastmoney_limit_pool_count("zt", trade_date)
+        limit_down = _get_eastmoney_limit_pool_count("dt", trade_date)
+        limit_rows.append({
+            "date": trade_date,
+            "limit_up": limit_up,
+            "limit_down": limit_down,
+        })
+
+    return {
+        "turnover_rows": turnover_rows,
+        "limit_rows": limit_rows,
+    }
 
 
 # ============================================================

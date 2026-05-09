@@ -148,7 +148,7 @@ cd risk_control
 ```
 
 #### 第一道：仓位管理（事前）
-- 个股上限基于熟悉程度评估（商模/股东/估值/趋势 4维度，0-1项→12%, 2项→15%, 3项→18%, 4项→22%）
+- 单只个股尽量不超过 20%
 - 单一行业 ≤ 30%
 - 总仓位根据市场波动率动态调整（<15%→80% / 15-25%→60% / 25-35%→40% / >35%→20%）
 
@@ -227,7 +227,7 @@ trade_plan = {status = "active", stop_loss_strategy = "equity_risk_budget", plan
 
 | 优先级 | 方向 | 目标 | 时间 |
 |--------|------|------|------|
-| P1 | 风控数据补数 | agent 先补齐行情依赖，再跑本地风控信号 | 4-5月 |
+| P1 | 风控数据补数 | 先检查行情依赖，缺口由行情源补齐，再跑本地风控信号 | 4-5月 |
 | P2 | 自动调度 + 微信推送 | 腾讯云 qclaw 定时触发，推送风控/复盘结果 | 5-6月 |
 | P3 | 持仓信息摘要 | 多源聚合 → LLM 压缩 → 结构化持仓情报 | 4-7月（持续） |
 | P4 | 持仓重要事件提醒 | 财报/分红/增减持等关键事件提前提醒 | 6-7月 |
@@ -241,32 +241,31 @@ trade_plan = {status = "active", stop_loss_strategy = "equity_risk_budget", plan
 风控标准流程：
 
 1. 检查风控策略依赖的数据范围：运行 `risk-data` 生成/校验补数需求。
-2. 数据获取：按 requirements 用 baostock/Futu 等行情源只补缺口数据，不重复刷新已有历史。
-3. 数据合并：运行 `risk-merge` 合并补数到长期 cache。
-4. 跑风控策略：运行 `risk`，默认只读取本地 cache。
+2. 数据获取：`risk` 会在缺数时按 requirements 用 baostock/Futu 等行情源只补缺口数据；`Ready=True` 时不刷新历史行情。
+3. 数据合并：行情源补数直接写入长期 cache；外部 JSON 补数才需要运行 `risk-merge`。
+4. 跑风控策略：补数检查通过后运行三道防线，策略默认读取本地 cache。
 5. 输出结论模板：代码输出结构化快照和信号结论，每日复盘正文由外部 prompt 模板组织。
 
 ```bash
 ./quickstart.sh risk-data
-# 补缺口数据，写入 data/cache/agent_prices/incoming/YYYYMMDD.json
-./quickstart.sh risk-merge
+# 如需合并外部 JSON 补数，再运行 risk-merge
 ./quickstart.sh risk
 ```
 
 会输出到 `output/`：
-- `risk_data_requirements_YYYYMMDD.json`：风控运行前的补数清单、缺口状态、agent cache 写入路径
-- `risk_price_merge_YYYYMMDD.json`：agent 补数合并报告
+- `risk_data_requirements_YYYYMMDD.json`：风控运行前的补数清单、缺口状态、本地 cache 路径和补数结果
+- `risk_price_merge_YYYYMMDD.json`：外部 JSON 补数合并报告
 
 `risk-merge` 会把 incoming JSON 合并到长期增量 cache：`data/cache/agent_prices/prices/{code}.csv` 和 `data/cache/agent_prices/indices/{code}.csv`。CSV 按日期倒序保存，打开文件时最新数据在最上面。
 
-`./quickstart.sh risk` 会先 strict 检查补数状态；关键行情缺失时会停止，并提示先按 requirements 让 agent 补数据。
+`./quickstart.sh risk` 会先 strict 检查补数状态；本地 cache 已满足时不会重新拉历史行情，只有缺数、数据不连续或复盘日行情不足时才补缺口。
 
 ## 数据源
 
 | 市场 | 数据源 | 备注 |
 |------|--------|------|
 | 风控配置 | `portfolio.toml` | 总权益、当前持仓、持仓级风控策略的唯一来源 |
-| 风控补数 | `data/cache/agent_prices/prices/{code}.csv` / `indices/{code}.csv` | 补缺口数据先写 incoming，再由 `risk-merge` 合并 |
+| 风控补数 | `data/cache/agent_prices/prices/{code}.csv` / `indices/{code}.csv` | 长期本地行情 cache，A 股默认前复权 |
 | A股行情 | baostock | 默认前复权 |
 | 港股行情 | FutuOpenD → 东方财富 | 多源 fallback，默认前复权 |
 | 指数/行业 | baostock + 东方财富 | 成分股 & 申万行业指数 |

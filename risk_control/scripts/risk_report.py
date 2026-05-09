@@ -26,7 +26,6 @@ from shared.portfolio_config import load_account_config, load_portfolio_from_tom
 from shared.config import parse_benchmark_config
 from risk_control.config import (
     MARKET_INDEX, ATR_PERIOD, PORTFOLIO_LOOKBACK_DAYS, DATA_FREQ,
-    FAMILIARITY_DIMENSIONS, FAMILIARITY_LEVEL_LABELS,
     get_regime_params,
 )
 from risk_control.scripts.risk_calc import calc_realized_vol
@@ -234,7 +233,24 @@ def _format_stop_loss_basis(sl):
     return f"成本{sl['cost_price']:.3f} - {sl_mult}×ATR{atr:.3f} = 止损价{sl['stop_loss']:.3f}"
 
 
-def format_terminal_report(today, portfolio_df, total_equity, pos_result, sl_levels, cb_result, anomaly_result, alert_groups=None):
+def _format_data_status(data_requirements):
+    if not data_requirements:
+        return []
+    lines = [f"  行情覆盖: {'Ready' if data_requirements.get('ready') else 'Not ready'}"]
+    stale_items = []
+    for item in data_requirements.get("holdings", []):
+        status = item.get("status", {})
+        if status.get("data_status") != "fresh":
+            stale_items.append(
+                f"{item.get('name', item.get('code'))} {status.get('data_status')} "
+                f"(as_of {status.get('as_of_date') or '-'})"
+            )
+    if stale_items:
+        lines.append("  数据标记: " + "；".join(stale_items[:5]))
+    return lines
+
+
+def format_terminal_report(today, portfolio_df, total_equity, pos_result, sl_levels, cb_result, anomaly_result, alert_groups=None, data_requirements=None):
     """生成终端输出文本"""
     lines = []
     w = 72
@@ -257,6 +273,7 @@ def format_terminal_report(today, portfolio_df, total_equity, pos_result, sl_lev
     regime_label = regime["label"]
     lines.append(f"  市场区间: {regime_label} (止损×{regime['stop_loss_multiplier']:.1f} "
                  f"止盈×{regime['take_profit_multiplier']:.1f})")
+    lines.extend(_format_data_status(data_requirements))
 
     # 第一道防线
     lines.append("")
@@ -269,9 +286,7 @@ def format_terminal_report(today, portfolio_df, total_equity, pos_result, sl_lev
                      f"超出建议 {pos_result['suggested_position']:.0%}")
 
     for v in pos_result["stock_violations"]:
-        level = v.get("familiarity_level", "low")
-        tag = FAMILIARITY_LEVEL_LABELS.get(level, "低") + "熟悉"
-        lines.append(f"  ⚠️ {v['name']} 占比 {v['weight']:.0%} > {tag}上限 {v['limit']:.0%}")
+        lines.append(f"  ⚠️ {v['name']} 占比 {v['weight']:.0%} > 个股上限 {v['limit']:.0%}")
 
     for v in pos_result["sector_violations"]:
         names = "、".join(v["codes"])
@@ -280,23 +295,13 @@ def format_terminal_report(today, portfolio_df, total_equity, pos_result, sl_lev
     if not pos_result["position_warning"] and not pos_result["stock_violations"] and not pos_result["sector_violations"]:
         lines.append("  ✅ 仓位正常")
 
-    # 熟悉程度概览
-    lines.append("")
-    lines.append("  个股熟悉程度评估:")
-    lines.append(f"  {'股票':<12} {'商模':>4} {'股东':>4} {'估值':>4} {'趋势':>4}  {'等级':>4} {'上限':>4}")
-    lines.append("  " + "─" * 48)
-    for sf in pos_result.get("stock_familiarity", []):
-        detail = sf["detail"] if isinstance(sf["detail"], dict) else {}
-        marks = [("✓" if detail.get(d, False) else "✗") for d in FAMILIARITY_DIMENSIONS]
-        label = FAMILIARITY_LEVEL_LABELS[sf["level"]]
-        lines.append(f"  {sf['name']:<12} {marks[0]:>4} {marks[1]:>4} {marks[2]:>4} {marks[3]:>4}  {label:>4} {sf['limit']:>4.0%}")
-
     # 第二道防线
     lines.append("")
     lines.append("🎯 第二道防线：止损止盈")
+    lines.append("  成本来源: portfolio.toml / 当前价来源: 本地行情 cache")
 
     # 表头
-    header = f"  {'股票':<10} {'成本':>8} {'现价':>8} {'止损':>8} {'ATR':>6} {'移动止':>8} {'盈亏':>7} {'信号':<6}"
+    header = f"  {'股票':<10} {'配置成本':>8} {'现价':>8} {'止损':>8} {'ATR':>6} {'移动止':>8} {'盈亏':>7} {'信号':<6}"
     lines.append(header)
     lines.append("  " + "─" * (w - 4))
 
@@ -384,11 +389,9 @@ def _generate_suggestions(pos_result, sl_levels, cb_result, anomaly_result):
         )
 
     for v in pos_result["stock_violations"]:
-        level = v.get("familiarity_level", "low")
-        tag = FAMILIARITY_LEVEL_LABELS.get(level, "低") + "熟悉"
         suggestions.append(
             f"减仓{v['name']}至{v['limit']:.0%}以下 "
-            f"(依据: {tag}上限{v['limit']:.0%}，当前占{v['weight']:.0%})"
+            f"(依据: 个股尽量不超过{v['limit']:.0%}，当前占{v['weight']:.0%})"
         )
 
     for v in pos_result["sector_violations"]:
@@ -474,6 +477,12 @@ def build_risk_snapshot(total_equity, refresh_market_data=False):
 
     # 1. 加载持仓
     portfolio_df = load_portfolio_from_toml(str(DEFAULT_PORTFOLIO_TOML))
+    try:
+        from risk_control.data_dependencies import build_data_requirements
+
+        data_requirements = build_data_requirements()
+    except Exception as exc:
+        data_requirements = {"ready": False, "error": str(exc)}
 
     # 2. 获取行情
     prices_dict, market_prices, market_index_name = fetch_prices(
@@ -545,6 +554,7 @@ def build_risk_snapshot(total_equity, refresh_market_data=False):
         "anomaly": anomaly_result,
         "signals": signal_results,
         "alert_groups": alert_groups,
+        "data_requirements": data_requirements,
     }
 
 
@@ -568,6 +578,7 @@ def export_risk_snapshot(snapshot, output_path):
         "anomaly": snapshot["anomaly"],
         "signals": snapshot["signals"],
         "alert_groups": snapshot["alert_groups"],
+        "data_requirements": snapshot.get("data_requirements", {}),
     }
     output_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default),
@@ -602,6 +613,7 @@ def run_risk_check(total_equity, refresh_market_data=False):
         snapshot["position"], snapshot["stop_loss"],
         snapshot["circuit_breaker"], snapshot["anomaly"],
         alert_groups=snapshot["alert_groups"],
+        data_requirements=snapshot.get("data_requirements"),
     )
     print(report_text)
 
@@ -624,6 +636,8 @@ def main():
                         help="总权益（含现金），不指定则从 portfolio.toml 读取")
     parser.add_argument("--refresh-market-data", action="store_true",
                         help="显式连接 baostock/Futu 刷新行情；默认只读取本地补数 cache")
+    parser.add_argument("--skip-data-check", action="store_true",
+                        help="跳过风控数据依赖检查，仅用于调试")
     args = parser.parse_args()
 
     equity = args.equity
@@ -635,6 +649,23 @@ def main():
             pass
     if equity is None:
         parser.error("未指定 --equity 且 portfolio.toml 中无 [account].total_equity")
+
+    if not args.skip_data_check:
+        from risk_control.data_dependencies import build_data_requirements, fetch_missing_data
+
+        requirements = build_data_requirements()
+        if not requirements["ready"]:
+            print("风控数据依赖未满足，开始补缺口...")
+            backfill = fetch_missing_data(requirements)
+            requirements = build_data_requirements()
+            if not requirements["ready"]:
+                print(
+                    "风控数据依赖仍未满足: "
+                    f"持仓 {len(requirements['missing']['holdings'])} 项, "
+                    f"市场指数 {len(requirements['missing']['market_indices'])} 项, "
+                    f"补数错误 {len(backfill.get('errors', []))} 项"
+                )
+                raise SystemExit(2)
 
     run_risk_check(equity, refresh_market_data=args.refresh_market_data)
 

@@ -69,7 +69,7 @@ notes = "回调或突破后再看"
 - `buy_date`: 买入日期，格式 `YYYYMMDD`
   - 当 `trade_plan.stop_loss_strategy = "entry_day_low_guard"` 时必填
   - 如果没写 `trade_plan`，而是直接在 `risk_rules.stop_loss_strategy` 指定该策略，也同样必填
-  - 建议 agent 生成 `[[holdings]]` 时显式输出，避免策略校验失败
+  - 建议维护 `[[holdings]]` 时显式输出，避免策略校验失败
 - `trade_plan`: 可选，已确认的交易计划
   - `status`: 计划状态，默认 `active`
   - `stop_loss_strategy`: 当前确认采用的止损策略，风控模块优先读取这一层
@@ -83,6 +83,7 @@ notes = "回调或突破后再看"
   - `price_tick = 0.01` 或 `stop_loss_params.price_tick = 0.01`（可选，默认 0.01）
   - `trailing_stop_atr_multiplier`
   - `take_profit_tiers = [{trigger_pct = 0.12, sell_ratio = 0.3}, ...]`
+  - `max_loss_pct_of_equity = 0.01`：仅 `equity_risk_budget` 使用，表示单票最多亏总权益 1%；未填默认 0.02
 
 ### `[[watchlist]]` 字段说明
 

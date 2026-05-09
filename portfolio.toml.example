@@ -17,23 +17,16 @@ update_time = "2026-01-01 09:00" # (可选) 更新时间，仅供记录
 # - buy_date: 买入日期，格式 YYYYMMDD
 #     只要 trade_plan.stop_loss_strategy 或 risk_rules.stop_loss_strategy 使用
 #     entry_day_low_guard / 未来其他入场日锚定策略，
-#     就必须显式填写 buy_date，方便 AI/agent 明确识别
+#     就必须显式填写 buy_date，方便后续维护时明确识别
 # - trade_plan: (可选) 已确认的交易计划，使用内联 table，建议 AI 优先维护这一层
 #     trade_plan = {status = "active", stop_loss_strategy = "...", plan_note = "..."}
 #     其中 stop_loss_strategy 可选 atr / entry_day_low_guard / equity_risk_budget
-# - familiarity: (可选) 熟悉程度评估，影响个股仓位上限
-#     business_model = true       商业模式优秀
-#     shareholder_friendly = true 对中小投资者态度友好
-#     valuation_low = true        当前估值处于历史低位/合理区间
-#     trend_up = true             技术趋势处于底部或上升趋势
-#   通过维度数: 0-1→12%, 2→15%, 3→18%, 4→22%  未填默认12%
-
 # 使用方法：
 # 1. 运行 ./scripts/init_project.sh 自动生成配置文件
 # 2. 或手动复制本文件为 portfolio.toml，修改为你的实际持仓
 # 3. 运行 ./quickstart.sh risk-data 检查风控补数需求
-# 4. agent 写入 data/cache/agent_prices/incoming/YYYYMMDD.json 后运行 ./quickstart.sh risk-merge
-# 5. 运行 ./quickstart.sh risk 执行风控检查
+# 4. 运行 ./quickstart.sh risk 执行风控检查；缺口会由行情源补齐
+# 5. 只有外部 JSON 补数时，才需要运行 ./quickstart.sh risk-merge
 
 [[holdings]]
 code = "600519"
@@ -44,7 +37,6 @@ cost_price = 1800.0
 # 必填：trade_plan.stop_loss_strategy = "entry_day_low_guard" 依赖 buy_date
 buy_date = "20240102"
 trade_plan = {status = "active", stop_loss_strategy = "entry_day_low_guard", plan_note = "跌破买入日低点下5tick执行"}
-familiarity = {business_model = true, shareholder_friendly = true, valuation_low = false, trend_up = true}
 risk_rules = {stop_loss_params = {buffer_ticks = 5}, trailing_stop_atr_multiplier = 2.5}
 
 [[holdings]]
@@ -54,6 +46,7 @@ market = "深圳"
 quantity = 1000
 cost_price = 12.5
 trade_plan = {status = "active", stop_loss_strategy = "equity_risk_budget", plan_note = "单票最多亏总权益2%"}
+risk_rules = {max_loss_pct_of_equity = 0.02}
 
 [[holdings]]
 code = "00700"
@@ -61,7 +54,6 @@ name = "腾讯控股"
 market = "沪港通"
 quantity = 100
 cost_price = 350.0
-familiarity = {business_model = true, shareholder_friendly = true, valuation_low = true, trend_up = true}
 
 [[holdings]]
 code = "159792"

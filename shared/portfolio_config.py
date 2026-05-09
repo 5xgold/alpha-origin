@@ -73,7 +73,7 @@ def load_portfolio_from_toml(toml_path: str = None) -> pd.DataFrame:
 
     Returns:
         DataFrame with columns:
-        code, name, market, quantity, cost_price, buy_date, familiarity_detail, trade_plan, risk_rules
+        code, name, market, quantity, cost_price, buy_date, trade_plan, risk_rules
 
     Raises:
         FileNotFoundError: 如果 portfolio.toml 不存在
@@ -104,28 +104,19 @@ def load_portfolio_from_toml(toml_path: str = None) -> pd.DataFrame:
     df["market"] = df["market"].astype(str)
     df["quantity"] = pd.to_numeric(df["quantity"])
     df["cost_price"] = pd.to_numeric(df["cost_price"])
+    df["cost_price_source"] = "portfolio.toml"
     buy_date = df.get("buy_date")
     if buy_date is None:
         df["buy_date"] = ""
     else:
         df["buy_date"] = buy_date.fillna("").astype(str)
 
-    # 解析熟悉程度评估（familiarity dict），向后兼容 conviction
-    familiarity_details = []
     trade_plan_list = []
     risk_rules_list = []
     for h in holdings:
         code = str(h.get("code", "unknown"))
         name = str(h.get("name", "unknown"))
         buy_date = str(h.get("buy_date", "") or "").strip()
-        fam = h.get("familiarity", {})
-        if not fam and h.get("conviction", False):
-            # conviction = true 向后兼容 → 视为四维度全通过
-            fam = {d: True for d in [
-                "business_model", "shareholder_friendly",
-                "valuation_low", "trend_up",
-            ]}
-        familiarity_details.append(fam)
         trade_plan = h.get("trade_plan", {})
         if not isinstance(trade_plan, dict):
             raise ValueError(f"{code} 的 trade_plan 必须是 table/dict")
@@ -137,13 +128,12 @@ def load_portfolio_from_toml(toml_path: str = None) -> pd.DataFrame:
         _validate_holding_config(code, name, buy_date, trade_plan, risk_rules)
         trade_plan_list.append(trade_plan)
         risk_rules_list.append(risk_rules)
-    df["familiarity_detail"] = familiarity_details
     df["trade_plan"] = trade_plan_list
     df["risk_rules"] = risk_rules_list
 
     return df[[
         "code", "name", "market", "quantity", "cost_price", "buy_date",
-        "familiarity_detail", "trade_plan", "risk_rules",
+        "cost_price_source", "trade_plan", "risk_rules",
     ]]
 
 
@@ -166,6 +156,8 @@ def _normalize_risk_rules(risk_rules):
         raise ValueError("risk_rules.stop_loss_params 必须是 table/dict")
     normalized["stop_loss_params"] = dict(stop_loss_params)
     normalized["stop_loss_strategy"] = str(normalized.get("stop_loss_strategy", "") or "").strip()
+    if "max_loss_pct_of_equity" in normalized:
+        normalized["max_loss_pct_of_equity"] = float(normalized["max_loss_pct_of_equity"])
     return normalized
 
 
@@ -178,6 +170,8 @@ def _validate_holding_config(code, name, buy_date, trade_plan, risk_rules):
         raise ValueError(f"{name}({code}) 的 stop_loss_strategy 不支持: {strategy}")
 
     if strategy not in _BUY_DATE_REQUIRED_STRATEGIES:
+        if "max_loss_pct_of_equity" in risk_rules and risk_rules["max_loss_pct_of_equity"] <= 0:
+            raise ValueError(f"{name}({code}) 的 risk_rules.max_loss_pct_of_equity 必须大于 0")
         return
 
     if not buy_date:
@@ -192,6 +186,9 @@ def _validate_holding_config(code, name, buy_date, trade_plan, risk_rules):
             f"{name}({code}) 的 buy_date 格式非法: {buy_date}。"
             '请使用 YYYYMMDD，例如 "20240102"。'
         )
+
+    if "max_loss_pct_of_equity" in risk_rules and risk_rules["max_loss_pct_of_equity"] <= 0:
+        raise ValueError(f"{name}({code}) 的 risk_rules.max_loss_pct_of_equity 必须大于 0")
 
 
 def _resolve_stop_loss_strategy(trade_plan, risk_rules):
@@ -267,9 +264,6 @@ if __name__ == "__main__":
         print(df.to_string(index=False))
         print(f"\n总计：{len(df)} 只股票")
 
-        # 同步到 CSV
-        print("\n同步到 CSV...")
-        sync_portfolio_to_csv()
     except Exception as e:
         print(f"❌ 错误：{e}")
         sys.exit(1)

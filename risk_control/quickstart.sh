@@ -48,13 +48,8 @@ fi
 
 # ── 检查 .env ──
 if [ ! -f "$ROOT_DIR/.env" ]; then
-    if [ -f "$ROOT_DIR/attribution_analysis/.env" ]; then
-        cp "$ROOT_DIR/attribution_analysis/.env" "$ROOT_DIR/.env"
-        info "已从 attribution_analysis 复制 .env"
-    else
-        warn "未找到 .env，港股数据可能无法获取"
-        warn "请创建 $ROOT_DIR/.env 并配置 FUTU_HOST/FUTU_PORT/TS_TOKEN"
-    fi
+    warn "未找到 .env，港股数据可能无法获取"
+    warn "请创建 $ROOT_DIR/.env 并配置 FUTU_HOST/FUTU_PORT/TS_TOKEN"
 fi
 
 # ── 检查持仓文件 ──
@@ -75,7 +70,7 @@ echo ""
 
 # ── 风控补数需求检查 ──
 cd "$ROOT_DIR"
-python3 risk_control/data_dependencies.py --strict
+python3 risk_control/data_dependencies.py --fetch-missing --strict
 
 # ── 运行风控检查 ──
 cd "$ROOT_DIR"

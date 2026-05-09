@@ -1,21 +1,21 @@
 # 风控补数数据依赖图
 
-目标：在没有稳定金融数据源时，让 agent 按风控计算逻辑补齐最小必要数据；本地项目只负责读取结构化数据并执行风控规则。
+目标：按风控计算逻辑声明最小必要数据，优先复用本地 cache；只有缺口、不连续或复盘日行情不足时才访问行情源补数。
 
 ## 总览
 
 风控标准流程：
 
 1. 检查风控策略依赖的数据范围：`risk_control/data_dependencies.py` 根据当前策略、持仓和市场指数生成需求。
-2. 数据获取：agent 只获取行情事实，按 requirements 写入 incoming。
-3. 数据合并：`risk_control/agent_price_cache.py` 合并、去重、校验并写入长期 cache。
+2. 数据获取：`risk` 在缺数时调用 baostock/Futu 等行情源补缺口；`Ready=True` 时不刷新历史行情。
+3. 数据合并：行情源补数直接写入长期 cache；外部 JSON 补数可用 `risk_control/agent_price_cache.py` 合并。
 4. 跑风控策略：`risk_control/scripts/risk_report.py` 默认只读取本地 cache 执行策略。
 5. 输出结论模板：导出 `risk_snapshot` 和 `risk_report`，外部 prompt 再组织每日复盘正文。
 
 ```mermaid
 flowchart TD
     A[portfolio.toml] --> B[持仓静态事实]
-    C[agent price backfill] --> D[持仓日线 OHLCV cache]
+    C[market data backfill] --> D[持仓日线 OHLCV cache]
     C --> E[市场指数日线 close cache]
     D --> F[enrich_portfolio]
     F --> G[仓位管理 check_positions]
@@ -35,9 +35,9 @@ flowchart TD
 
 ## 补数原则
 
-- agent 只补行情事实，不输出止损、止盈、加减仓结论。
+- 补数只补行情事实，不输出止损、止盈、加减仓结论。
 - 本地风控只读取 cache，所有信号仍由代码计算。
-- 每条补数必须带可追踪来源；agent 先写 incoming JSON，本地 `risk-merge` 负责合并、去重、排序和校验。
+- 每条补数必须带可追踪来源；外部 JSON 补数先写 incoming，本地 `risk-merge` 负责合并、去重、排序和校验。
 - 日线数据必须按交易日升序，字段名固定为 `date/open/high/low/close/volume`。
 - 复盘日缺行情时，可以补最近一个有效交易日，但必须标注 `as_of_date != review_date`。
 
@@ -48,10 +48,10 @@ flowchart TD
 | 持仓日线 | portfolio.toml 中全部持仓 | `date, open, high, low, close, volume` | 60 个交易日 | 当前价格、ATR、移动止损、熔断、异常、相关性、支撑位 |
 | 市场指数日线 | `risk_control.config.MARKET_INDEX` | `date, close` | 20 个交易日 | 市场波动率、建议仓位 |
 | 买入日日线 | 启用 `entry_day_low_guard` 的持仓 | `date, low` | 买入日当天 | 入场保护止损 |
-| 持仓静态事实 | portfolio.toml | `code, name, market, quantity, cost_price, buy_date, risk_rules, trade_plan, familiarity_detail` | 当前快照 | 仓位、成本、止损模式、熟悉度上限 |
+| 持仓静态事实 | portfolio.toml | `code, name, market, quantity, cost_price, buy_date, risk_rules, trade_plan` | 当前快照 | 仓位、成本、止损模式 |
 | 账户事实 | portfolio.toml `[account]` | `total_equity` | 当前快照 | 总仓位、单票权重、权益风险预算止损 |
 
-建议 agent 一次性补：每只持仓回溯 90 个自然日或不少于 60 个交易日的 OHLCV；市场指数回溯 45 个自然日或不少于 20 个交易日 close。这样可覆盖当前所有信号。
+建议一次性补：每只持仓回溯 90 个自然日或不少于 60 个交易日的 OHLCV；市场指数回溯 45 个自然日或不少于 20 个交易日 close。这样可覆盖当前所有信号。
 
 ## 信号依赖矩阵
 
@@ -75,7 +75,7 @@ flowchart TD
 | 金字塔加仓 | 持仓 `high/low/close`、`volume` 非必需 | 20 日 | 支撑位判断缺失 |
 | `stop_loss_basic/trailing_stop/take_profit_tiered` | `sl_levels` | 继承止损止盈 | 上游 `sl_levels` 缺失则插件无信号 |
 
-## Agent 补数请求契约
+## 补数请求契约
 
 ```json
 {
@@ -102,7 +102,7 @@ flowchart TD
 }
 ```
 
-## Agent 补数返回契约
+## 外部 JSON 补数返回契约
 
 ```json
 {
@@ -130,7 +130,7 @@ flowchart TD
 }
 ```
 
-agent 不直接写长期 CSV，只写入：
+外部补数不直接写长期 CSV，只写入：
 
 ```text
 data/cache/agent_prices/incoming/YYYYMMDD.json
@@ -157,15 +157,14 @@ CSV 按日期倒序保存，方便人工打开时优先看到最新数据。
 sequenceDiagram
     participant DR as risk runner
     participant RD as risk_dependency
-    participant AG as agent/neo_price
+    participant AG as market data
     participant AC as agent_prices cache
     participant RR as risk_report
 
     DR->>RD: 根据 portfolio.toml 生成补数请求
     RD->>AC: 读取已有 cache
     RD->>AG: 只请求缺失代码/缺失日期
-    AG->>AC: 写入 incoming JSON
-    AC->>AC: risk-merge 合并到长期 CSV cache
+    AG->>AC: 写入长期 CSV cache
     DR->>RR: build_risk_snapshot
     RR->>AC: 通过 data_provider 读取 cache
     RR->>DR: 返回 risk_snapshot
@@ -175,7 +174,7 @@ sequenceDiagram
 ## 当前实现改造顺序
 
 1. `risk_control/data_dependencies.py` 从 `portfolio.toml` 和 `MARKET_INDEX` 生成补数请求。
-2. agent 按请求写入 `data/cache/agent_prices/incoming/YYYYMMDD.json`。
-3. `quickstart.sh risk-merge` 合并、去重、排序到长期 CSV cache。
-4. `risk` 默认要求 cache 覆盖关键行情；缺关键数据时直接提示补数请求，不再假装风控可靠。
+2. `quickstart.sh risk` 在缺口存在时调用行情源补齐本地 cache。
+3. 外部 JSON 补数仍可通过 `quickstart.sh risk-merge` 合并、去重、排序到长期 CSV cache。
+4. `risk` 默认要求 cache 覆盖关键行情；缺关键数据时直接停止，不再假装风控可靠。
 5. 报告中披露每个持仓的行情来源、`as_of_date` 和降级原因。

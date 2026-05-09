@@ -1,7 +1,7 @@
-"""风控补数需求生成与本地缓存检查。
+"""风控数据依赖生成、本地缓存检查与缺口补数。
 
-该模块不访问外部行情源，只读取 portfolio.toml 与本地 cache。
-用途是在 agent 跑风控前生成明确的补数清单：缺什么、要补多少历史、补完写到哪里。
+默认只读取 portfolio.toml 与本地 cache；显式传入 --fetch-missing 时才访问外部行情源。
+用途是在跑风控前明确：策略依赖什么数据、本地缺什么、是否需要补缺口。
 """
 
 import argparse
@@ -17,7 +17,12 @@ sys.path.append(str(Path(__file__).parent.parent))
 from risk_control.config import ATR_PERIOD, MARKET_INDEX, PORTFOLIO_LOOKBACK_DAYS
 from risk_control.agent_price_cache import read_cached_series as read_agent_price_series
 from shared.config import CACHE_DIR, parse_benchmark_config
-from shared.data_provider import latest_baostock_available_date
+from shared.data_provider import (
+    baostock_session,
+    get_benchmark_prices,
+    get_stock_prices,
+    latest_baostock_available_date,
+)
 from shared.portfolio_config import load_portfolio_from_toml
 
 
@@ -201,6 +206,7 @@ def _coverage_status(
     start_date=None,
     exact_date=None,
     allow_stale_calendar_days=0,
+    max_internal_gap_calendar_days=14,
 ):
     ed = pd.to_datetime(review_date)
     local = df.copy()
@@ -222,16 +228,33 @@ def _coverage_status(
         local = local[local["date"] == pd.to_datetime(exact_date)]
     missing_fields = [field for field in required_fields if field not in local.columns]
     latest_date = "" if local.empty else local["date"].max().strftime("%Y-%m-%d")
+    local = local.sort_values("date").reset_index(drop=True)
     ready = not missing_fields and len(local) >= min_rows
     reason = ""
     data_status = "fresh"
     stale_days = None
+    internal_gaps = []
+    if exact_date is None and len(local) >= 2 and max_internal_gap_calendar_days:
+        dates = list(local["date"].dropna().sort_values())
+        for prev, current in zip(dates, dates[1:]):
+            delta = current - prev
+            days = int(delta.days)
+            if days > max_internal_gap_calendar_days:
+                internal_gaps.append({
+                    "from": prev.strftime("%Y-%m-%d"),
+                    "to": current.strftime("%Y-%m-%d"),
+                    "calendar_days": days,
+                })
     if missing_fields:
         reason = "missing_fields"
         data_status = "invalid"
     elif len(local) < min_rows:
         reason = "insufficient_rows"
         data_status = "insufficient"
+    elif internal_gaps:
+        reason = "date_gap"
+        data_status = "gap"
+        ready = False
     elif latest_date and latest_date.replace("-", "") < review_date and exact_date is None:
         latest_ts = pd.to_datetime(latest_date)
         stale_days = int((ed - latest_ts).days)
@@ -251,6 +274,8 @@ def _coverage_status(
         "data_status": data_status,
         "as_of_date": latest_date,
         "stale_days": stale_days,
+        "has_gaps": bool(internal_gaps),
+        "internal_gaps": internal_gaps,
     }
 
 
@@ -359,12 +384,11 @@ def build_data_requirements(review_date=None, portfolio_path=None):
         "review_date": _fmt_date(review_date),
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "ready": ready,
-        "agent_incoming_path": str(AGENT_PRICE_CACHE_DIR / "incoming" / f"{review_date}.json"),
-        "agent_cache_paths": {
+        "local_price_cache_paths": {
             "prices": str(AGENT_PRICE_CACHE_DIR / "prices" / "{code}.csv"),
             "indices": str(AGENT_PRICE_CACHE_DIR / "indices" / "{code}.csv"),
         },
-        "agent_cache_path": str(AGENT_PRICE_CACHE_DIR / "incoming" / f"{review_date}.json"),
+        "incoming_price_cache_path": str(AGENT_PRICE_CACHE_DIR / "incoming" / f"{review_date}.json"),
         "minimum_policy": {
             "holding_ohlcv_trading_days": HOLDING_LOOKBACK_TRADING_DAYS,
             "holding_ohlcv_calendar_days": HOLDING_LOOKBACK_CALENDAR_DAYS,
@@ -377,17 +401,64 @@ def build_data_requirements(review_date=None, portfolio_path=None):
             "holdings": missing_holdings,
             "market_indices": missing_indices,
         },
-        "agent_instructions": [
+        "backfill_instructions": [
             "先补 missing.holdings 与 missing.market_indices 中列出的数据，再执行风控。",
             "补数只写行情事实，不写止损、止盈、加减仓结论。",
-            "将结果先写入 agent_incoming_path，JSON 字段为 prices 与 indices。",
-            "写入后运行 ./quickstart.sh risk-merge 合并到长期增量 CSV cache。",
+            "默认用 baostock/Futu 等行情源补本地缺口；Ready=True 时不刷新历史行情。",
             "prices 每个 code 需要 date/open/high/low/close/volume，indices 每个 code 至少需要 date/close。",
-            "prices 行情统一使用前复权 qfq；写入 agent cache 时每行带 adjust=qfq，旧数据缺 adjust 时按 qfq 兼容。",
+            "prices 行情统一使用前复权 qfq；本地 cache 记录 adjust=qfq，旧数据缺 adjust 时按 qfq 兼容。",
             "停牌或无成交标的可使用最近有效交易日行情；此时 status.data_status=possibly_suspended，as_of_date 标明实际行情日期。",
         ],
     }
     return payload
+
+
+def fetch_missing_data(payload):
+    """按数据依赖清单补缺口。只在 payload 未 ready 时调用。"""
+    fetched = {"holdings": [], "market_indices": [], "errors": []}
+    if payload.get("ready"):
+        return fetched
+
+    try:
+        with baostock_session():
+            for item in payload.get("missing", {}).get("holdings", []):
+                code = item["code"]
+                for req in item.get("requirements", []):
+                    if req.get("series") not in ("ohlcv_daily", "entry_day_low"):
+                        continue
+                    start = req.get("start_date") or req.get("date")
+                    end = req.get("end_date") or req.get("date")
+                    try:
+                        df = get_stock_prices(code, start, end, adjust="qfq")
+                        fetched["holdings"].append({
+                            "code": code,
+                            "series": req.get("series"),
+                            "start_date": start,
+                            "end_date": end,
+                            "rows": 0 if df is None else int(len(df)),
+                        })
+                    except Exception as exc:
+                        fetched["errors"].append({"code": code, "series": req.get("series"), "error": str(exc)})
+
+            for item in payload.get("missing", {}).get("market_indices", []):
+                code = item["code"]
+                req = item.get("requirements", [{}])[0]
+                start = req.get("start_date")
+                end = req.get("end_date")
+                try:
+                    df = get_benchmark_prices(code, start, end)
+                    fetched["market_indices"].append({
+                        "code": code,
+                        "series": req.get("series"),
+                        "start_date": start,
+                        "end_date": end,
+                        "rows": 0 if df is None else int(len(df)),
+                    })
+                except Exception as exc:
+                    fetched["errors"].append({"code": code, "series": req.get("series"), "error": str(exc)})
+    except Exception as exc:
+        fetched["errors"].append({"scope": "market_data_session", "error": str(exc)})
+    return fetched
 
 
 def main():
@@ -395,11 +466,15 @@ def main():
     parser.add_argument("--date", help="复盘/风控日期，格式 YYYYMMDD 或 YYYY-MM-DD")
     parser.add_argument("--portfolio", help="portfolio.toml 路径")
     parser.add_argument("--output", help="输出 JSON 路径，默认 output/risk_data_requirements_YYYYMMDD.json")
+    parser.add_argument("--fetch-missing", action="store_true", help="仅当本地 cache 不满足依赖时，用行情源补缺口后重新检查")
     parser.add_argument("--strict", action="store_true", help="存在缺数时返回非 0，供 quickstart 阻止继续跑风控")
     args = parser.parse_args()
 
     review_date = normalize_review_date(args.date)
     payload = build_data_requirements(review_date, args.portfolio)
+    if args.fetch_missing and not payload["ready"]:
+        payload["backfill"] = fetch_missing_data(payload)
+        payload = build_data_requirements(review_date, args.portfolio) | {"backfill": payload["backfill"]}
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     output = Path(args.output) if args.output else OUTPUT_DIR / f"risk_data_requirements_{review_date}.json"
     output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -407,7 +482,15 @@ def main():
     print(f"风控数据检查日期: {payload['review_date']}")
     print(f"Ready: {payload['ready']}")
     print(f"Requirements: {output}")
-    print(f"Agent cache: {payload['agent_cache_path']}")
+    print(f"Local price cache: {payload['local_price_cache_paths']['prices']}")
+    if payload.get("backfill"):
+        backfill = payload["backfill"]
+        print(
+            "Backfill: "
+            f"持仓 {len(backfill.get('holdings', []))} 项, "
+            f"市场指数 {len(backfill.get('market_indices', []))} 项, "
+            f"错误 {len(backfill.get('errors', []))} 项"
+        )
     if not payload["ready"]:
         print(
             "缺数: "

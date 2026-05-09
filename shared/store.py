@@ -89,7 +89,7 @@ def get_portfolio():
     """读取当前持仓。
 
     Returns:
-        DataFrame[code, name, market, quantity, cost_price, familiarity_detail]
+        DataFrame[code, name, market, quantity, cost_price]
     """
     from shared.portfolio_config import load_portfolio_from_toml
     return load_portfolio_from_toml(str(_PORTFOLIO_TOML))

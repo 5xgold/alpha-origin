@@ -140,12 +140,6 @@ class RiskControlTests(unittest.TestCase):
             "cost_price": 100.0,
             "current_price": 92.0,
             "market_value": 1000.0,
-            "familiarity_detail": {
-                "business_model": True,
-                "shareholder_friendly": True,
-                "valuation_low": True,
-                "trend_up": True,
-            },
         }])
         prices = {
             "A": pd.DataFrame({
@@ -290,14 +284,49 @@ class RiskControlTests(unittest.TestCase):
 
         self.assertEqual(result[0]["stop_loss_strategy"], "equity_risk_budget")
         self.assertAlmostEqual(result[0]["position_weight"], 0.1)
+        self.assertAlmostEqual(result[0]["max_loss_pct_of_equity"], 0.02)
         self.assertAlmostEqual(result[0]["max_loss_pct"], 0.2)
         self.assertEqual(result[0]["stop_loss"], 80.0)
         self.assertEqual(result[0]["signal"], "stop_loss")
 
         self.assertAlmostEqual(result[1]["position_weight"], 0.2)
+        self.assertAlmostEqual(result[1]["max_loss_pct_of_equity"], 0.02)
         self.assertAlmostEqual(result[1]["max_loss_pct"], 0.1)
         self.assertEqual(result[1]["stop_loss"], 180.0)
         self.assertEqual(result[1]["signal"], "stop_loss")
+
+    def test_calc_stop_take_levels_supports_equity_risk_budget_override(self):
+        portfolio = pd.DataFrame([{
+            "code": "A",
+            "name": "Alpha",
+            "market": "上海",
+            "quantity": 100,
+            "cost_price": 100.0,
+            "current_price": 89.0,
+            "risk_rules": {
+                "stop_loss_strategy": "equity_risk_budget",
+                "max_loss_pct_of_equity": 0.01,
+            },
+        }])
+        prices = {
+            "A": pd.DataFrame({
+                "date": pd.date_range("2024-01-01", periods=20),
+                "open": [100.0] * 20,
+                "high": [101.0] * 20,
+                "low": [89.0] * 20,
+                "close": [89.0] * 20,
+                "volume": [1000] * 20,
+            }),
+        }
+
+        result = calc_stop_take_levels(portfolio, prices, total_equity=100000.0)[0]
+
+        self.assertEqual(result["stop_loss_strategy"], "equity_risk_budget")
+        self.assertAlmostEqual(result["max_loss_pct_of_equity"], 0.01)
+        self.assertAlmostEqual(result["position_weight"], 0.1)
+        self.assertAlmostEqual(result["max_loss_pct"], 0.1)
+        self.assertEqual(result["stop_loss"], 90.0)
+        self.assertEqual(result["signal"], "stop_loss")
 
     def test_calc_stop_take_levels_trade_plan_strategy_overrides_risk_rules(self):
         portfolio = pd.DataFrame([{

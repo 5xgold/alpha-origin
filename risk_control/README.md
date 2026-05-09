@@ -36,15 +36,13 @@ trade_plan = {status = "active", stop_loss_strategy = "atr"}
 ## 三道防线
 
 ### 第一道：仓位管理
-- 个股仓位上限基于熟悉程度评估（4维度打分）
-  - 商业模式 / 股东态度 / 估值位置 / 技术趋势
-  - 0-1项通过 → 12%，2项 → 15%，3项 → 18%，4项 → 22%
+- 单只个股尽量不超过 20%
 - 行业仓位上限 30%
 - 根据市场波动率动态调整建议总仓位
 
 ### 第二道：止损止盈
 - ATR 止损：成本 - 2×ATR(14)
-- 可选总权益风险预算止损：单票最多亏总权益 2%
+- 可选总权益风险预算止损：默认单票最多亏总权益 2%，可用 `risk_rules.max_loss_pct_of_equity` 覆盖
   例如 10% 仓位允许 20% 跌幅，20% 仓位允许 10% 跌幅
 - 分批止盈：+15% 卖 1/3，+30% 再卖 1/3
 - 移动止损：近期高点 - 1.5×ATR
@@ -60,11 +58,12 @@ market = "深圳"
 quantity = 1000
 cost_price = 12.5
 trade_plan = {status = "active", stop_loss_strategy = "equity_risk_budget", plan_note = "单票最多亏总权益2%"}
+risk_rules = {max_loss_pct_of_equity = 0.01}
 ```
 
 计算方式：
 - 持仓权重 = `建仓成本 / 总权益`
-- 最大亏损比例 = `2% / 持仓权重`
+- 最大亏损比例 = `权益预算比例 / 持仓权重`，默认权益预算比例为 2%
 - 止损价 = `成本价 × (1 - 最大亏损比例)`
 
 示例：
@@ -82,7 +81,7 @@ trade_plan = {status = "active", stop_loss_strategy = "equity_risk_budget", plan
 编辑 `config.py` 调整风控参数。关键配置：
 
 ```python
-MAX_SINGLE_STOCK_WEIGHT = 0.15      # 个股仓位上限
+MAX_SINGLE_STOCK_WEIGHT = 0.20      # 个股仓位上限
 MAX_SINGLE_SECTOR_WEIGHT = 0.30     # 行业仓位上限
 STOP_LOSS_ATR_MULTIPLIER = 2.0      # 止损 ATR 倍数
 CIRCUIT_BREAKER = {"daily": 0.03, "weekly": 0.05, "monthly": 0.08}

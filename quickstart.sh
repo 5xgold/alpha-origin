@@ -7,7 +7,7 @@
 #   ./quickstart.sh attr [开始日期] [结束日期]             # 仅归因分析
 #   ./quickstart.sh risk [总权益]                          # 仅风控检查
 #   ./quickstart.sh risk-data [日期]                       # 风控补数需求检查
-#   ./quickstart.sh risk-merge [日期]                      # 合并 agent 补数 cache
+#   ./quickstart.sh risk-merge [日期]                      # 合并外部补数 cache
 #
 # 总权益默认从 portfolio.toml 读取，也可手动指定
 
@@ -36,7 +36,7 @@ usage() {
     echo "  ./quickstart.sh parse <PDF>"
     echo "  ./quickstart.sh attr [开始日期] [结束日期]"
     echo "  ./quickstart.sh risk-data [日期]             # 风控补数需求检查"
-    echo "  ./quickstart.sh risk-merge [日期]            # 合并 agent 补数 cache"
+    echo "  ./quickstart.sh risk-merge [日期]            # 合并外部补数 cache"
     echo "  ./quickstart.sh risk [总权益]"
     echo "  ./quickstart.sh review [股票代码]          # 交易复盘"
     echo "  ./quickstart.sh earnings <PDF> <股票代码>  # 财报摘要"
@@ -136,7 +136,7 @@ do_risk() {
     fi
 
     step "风控补数需求检查"
-    python3 "$RC_DIR/data_dependencies.py" --strict
+    python3 "$RC_DIR/data_dependencies.py" --fetch-missing --strict
 
     step "风控检查"
     python3 "$RC_DIR/scripts/risk_report.py" \

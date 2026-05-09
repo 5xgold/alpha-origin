@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from risk_control.agent_price_cache import merge_incoming, read_cached_series
-from risk_control.data_dependencies import build_data_requirements
+from risk_control.data_dependencies import build_data_requirements, fetch_missing_data
 from shared.data_provider import get_stock_prices, get_benchmark_prices
 
 
@@ -54,6 +54,13 @@ def _business_day_rows(start="2026-01-08", end="2026-05-08"):
             "volume": 100000 + i,
         })
     return rows
+
+
+def _business_day_rows_with_gap():
+    return (
+        _business_day_rows(start="2026-01-01", end="2026-03-10")
+        + _business_day_rows(start="2026-04-10", end="2026-05-08")
+    )
 
 
 def _patch_agent_cache_dirs(root, incoming_dir=None):
@@ -111,7 +118,8 @@ class RiskDataDependencyTests(unittest.TestCase):
             (incoming_dir / "20260508.json").write_text(json.dumps(payload), encoding="utf-8")
             _merge_with_patched_dirs(root, incoming_dir=incoming_dir)
 
-            with patch("risk_control.data_dependencies.AGENT_PRICE_CACHE_DIR", root / "agent_prices"), \
+            with patch("risk_control.data_dependencies.CACHE_DIR", str(root)), \
+                 patch("risk_control.data_dependencies.AGENT_PRICE_CACHE_DIR", root / "agent_prices"), \
                  patch("risk_control.agent_price_cache.PRICES_DIR", root / "agent_prices" / "prices"), \
                  patch("risk_control.agent_price_cache.INDICES_DIR", root / "agent_prices" / "indices"):
                 result = build_data_requirements("20260508", portfolio)
@@ -282,6 +290,46 @@ class RiskDataDependencyTests(unittest.TestCase):
         self.assertTrue(payload["ready"])
         self.assertEqual(payload["missing"]["holdings"], [])
         self.assertEqual(payload["missing"]["market_indices"], [])
+
+    def test_build_data_requirements_rejects_internal_price_gap(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            portfolio = root / "portfolio.toml"
+            portfolio.write_text(PORTFOLIO_TOML, encoding="utf-8")
+            incoming_dir = root / "agent_prices" / "incoming"
+            incoming_dir.mkdir(parents=True)
+            payload = {
+                "prices": {"600036": _business_day_rows_with_gap()},
+                "indices": {
+                    "000001": [{"date": f"2026-04-{10 + i:02d}", "close": 3000 + i} for i in range(20)],
+                    "000300": [{"date": f"2026-04-{10 + i:02d}", "close": 4000 + i} for i in range(20)],
+                    "HK.800000": [{"date": f"2026-04-{10 + i:02d}", "close": 20000 + i} for i in range(20)],
+                },
+            }
+            for rows in payload["indices"].values():
+                rows[-1]["date"] = "2026-05-08"
+            (incoming_dir / "20260508.json").write_text(json.dumps(payload), encoding="utf-8")
+            _merge_with_patched_dirs(root, incoming_dir=incoming_dir)
+
+            with patch("risk_control.data_dependencies.CACHE_DIR", str(root)), \
+                 patch("risk_control.data_dependencies.AGENT_PRICE_CACHE_DIR", root / "agent_prices"), \
+                 patch("risk_control.agent_price_cache.PRICES_DIR", root / "agent_prices" / "prices"), \
+                 patch("risk_control.agent_price_cache.INDICES_DIR", root / "agent_prices" / "indices"):
+                result = build_data_requirements("20260508", portfolio)
+
+        self.assertFalse(result["ready"])
+        status = result["missing"]["holdings"][0]["status"]
+        self.assertEqual(status["reason"], "date_gap")
+        self.assertTrue(status["has_gaps"])
+
+    def test_fetch_missing_data_skips_when_ready(self):
+        payload = {"ready": True, "missing": {"holdings": [{"code": "600036"}], "market_indices": []}}
+
+        with patch("risk_control.data_dependencies.get_stock_prices") as fetch_stock:
+            result = fetch_missing_data(payload)
+
+        self.assertEqual(result["holdings"], [])
+        fetch_stock.assert_not_called()
 
 
 if __name__ == "__main__":

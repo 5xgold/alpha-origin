@@ -31,6 +31,8 @@ risk_rules = {stop_loss_params = {buffer_ticks = 5}}
         self.assertEqual(df.iloc[0]["trade_plan"]["stop_loss_strategy"], "entry_day_low_guard")
         self.assertEqual(df.iloc[0]["trade_plan"]["plan_note"], "test")
         self.assertEqual(df.iloc[0]["risk_rules"]["stop_loss_params"]["buffer_ticks"], 5)
+        self.assertEqual(df.iloc[0]["cost_price"], 1800)
+        self.assertEqual(df.iloc[0]["cost_price_source"], "portfolio.toml")
 
     def test_load_portfolio_from_toml_requires_buy_date_for_entry_day_low_guard(self):
         content = """
@@ -108,6 +110,45 @@ trade_plan = {status = "active", stop_loss_strategy = "legacy_stop"}
             path = Path(tmpdir) / "portfolio.toml"
             path.write_text(content, encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "stop_loss_strategy 不支持: legacy_stop"):
+                load_portfolio_from_toml(str(path))
+
+    def test_load_portfolio_from_toml_preserves_equity_risk_budget_override(self):
+        content = """
+[account]
+total_equity = 100000
+
+[[holdings]]
+code = "600519"
+name = "贵州茅台"
+market = "上海"
+quantity = 10
+cost_price = 1800
+risk_rules = {stop_loss_strategy = "equity_risk_budget", max_loss_pct_of_equity = 0.01}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "portfolio.toml"
+            path.write_text(content, encoding="utf-8")
+            df = load_portfolio_from_toml(str(path))
+
+        self.assertEqual(df.iloc[0]["risk_rules"]["max_loss_pct_of_equity"], 0.01)
+
+    def test_load_portfolio_from_toml_rejects_invalid_equity_risk_budget_override(self):
+        content = """
+[account]
+total_equity = 100000
+
+[[holdings]]
+code = "600519"
+name = "贵州茅台"
+market = "上海"
+quantity = 10
+cost_price = 1800
+risk_rules = {stop_loss_strategy = "equity_risk_budget", max_loss_pct_of_equity = 0}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "portfolio.toml"
+            path.write_text(content, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "max_loss_pct_of_equity 必须大于 0"):
                 load_portfolio_from_toml(str(path))
 
     def test_load_watchlist_from_toml(self):

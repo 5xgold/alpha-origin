@@ -1,6 +1,6 @@
-"""Agent 行情补数增量缓存。
+"""外部行情补数增量缓存。
 
-agent 只写 incoming JSON；本模块负责校验、合并、去重、按日期倒序保存。
+外部 JSON 只写 incoming；本模块负责校验、合并、去重、按日期倒序保存。
 长期缓存:
 - data/cache/agent_prices/prices/{code}.csv
 - data/cache/agent_prices/indices/{code}.csv
@@ -238,7 +238,7 @@ def merge_incoming(review_date=None, incoming=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="合并 agent 补数行情到长期增量 cache")
+    parser = argparse.ArgumentParser(description="合并外部补数行情到长期增量 cache")
     parser.add_argument("--date", help="复盘/风控日期，格式 YYYYMMDD 或 YYYY-MM-DD")
     parser.add_argument("--incoming", action="append", help="指定 incoming JSON，可重复传入；默认读取 incoming/*日期*.json")
     parser.add_argument("--strict", action="store_true", help="存在合并错误时返回非 0")

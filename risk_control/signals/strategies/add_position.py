@@ -12,9 +12,7 @@ from risk_control.config import (
     PYRAMID_ADD_RATIOS,
     PYRAMID_SUPPORT_METHODS,
     PYRAMID_MIN_DROP_PCT,
-    FAMILIARITY_DIMENSIONS,
-    FAMILIARITY_POSITION_TIERS,
-    get_familiarity_level,
+    MAX_SINGLE_STOCK_WEIGHT,
 )
 
 
@@ -41,13 +39,8 @@ def check(portfolio_df, prices_dict, *, state, total_equity=0, **kwargs):
         if drop_pct < PYRAMID_MIN_DROP_PCT:
             continue
 
-        # 检查仓位上限约束
-        fam_detail = row.get("familiarity_detail", {})
-        if not isinstance(fam_detail, dict):
-            fam_detail = {}
-        true_count = sum(1 for d in FAMILIARITY_DIMENSIONS if fam_detail.get(d, False))
-        fam_level = get_familiarity_level(true_count)
-        position_limit = FAMILIARITY_POSITION_TIERS[fam_level]
+        # 检查个股固定仓位上限约束
+        position_limit = MAX_SINGLE_STOCK_WEIGHT
 
         current_weight = mv / total_equity if total_equity > 0 else 0
         if current_weight >= position_limit:

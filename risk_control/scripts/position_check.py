@@ -6,9 +6,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from shared.data_provider import get_stock_sector
 from risk_control.config import (
-    FAMILIARITY_DIMENSIONS,
-    FAMILIARITY_POSITION_TIERS,
-    get_familiarity_level,
+    MAX_SINGLE_STOCK_WEIGHT,
     MAX_SINGLE_SECTOR_WEIGHT,
     VOLATILITY_POSITION_BANDS,
 )
@@ -33,8 +31,7 @@ def check_positions(portfolio_df, total_equity, market_vol, market_index_name="�
 
     Returns:
         dict: {
-            stock_violations: [{code, name, weight, limit, familiarity_level}],
-            stock_familiarity: [{name, detail, level, limit}],
+            stock_violations: [{code, name, weight, limit}],
             sector_violations: [{sector, weight, limit, codes}],
             suggested_position: float,
             current_position: float,
@@ -45,7 +42,6 @@ def check_positions(portfolio_df, total_equity, market_vol, market_index_name="�
     """
     result = {
         "stock_violations": [],
-        "stock_familiarity": [],  # 每只股票的熟悉程度评估结果
         "sector_violations": [],
         "suggested_position": _get_suggested_position(market_vol),
         "current_position": 0.0,
@@ -60,32 +56,16 @@ def check_positions(portfolio_df, total_equity, market_vol, market_index_name="�
     total_market_value = portfolio_df["market_value"].sum()
     result["current_position"] = total_market_value / total_equity
 
-    # 个股仓位检查（基于熟悉程度评估）
+    # 个股仓位检查：简单固定上限
     for _, row in portfolio_df.iterrows():
         weight = row["market_value"] / total_equity
-        fam_detail = row.get("familiarity_detail", {})
-        if not isinstance(fam_detail, dict):
-            fam_detail = {}
-        true_count = sum(1 for d in FAMILIARITY_DIMENSIONS if fam_detail.get(d, False))
-        fam_level = get_familiarity_level(true_count)
-        limit = FAMILIARITY_POSITION_TIERS[fam_level]
-
-        # 记录每只股票的熟悉程度（供报告概览表使用）
-        result["stock_familiarity"].append({
-            "name": row["name"],
-            "detail": fam_detail,
-            "level": fam_level,
-            "limit": limit,
-        })
-
-        if weight > limit:
+        if weight > MAX_SINGLE_STOCK_WEIGHT:
             result["stock_violations"].append({
                 "code": row["code"],
                 "name": row["name"],
                 "weight": weight,
                 "actual_pct": weight,
-                "limit": limit,
-                "familiarity_level": fam_level,
+                "limit": MAX_SINGLE_STOCK_WEIGHT,
             })
 
     # 行业仓位检查

@@ -26,10 +26,6 @@ usage() {
                      stock: 股票代码
                      示例: ./quickstart.sh query 600519
 
-  scan               扫描当前持仓的形态信号
-                     读取 ../risk_control/data/portfolio.csv
-                     示例: ./quickstart.sh scan
-
   demo               演示模式（使用模拟数据）
                      示例: ./quickstart.sh demo
 
@@ -45,9 +41,6 @@ usage() {
 
   # 查询茅台的相似案例
   ./quickstart.sh query 600519
-
-  # 扫描当前持仓
-  ./quickstart.sh scan
 
   # 演示模式
   ./quickstart.sh demo
@@ -128,21 +121,6 @@ case $COMMAND in
         echo "股票代码: $STOCK"
         python3 scripts/pattern_search.py \
             --stock "$STOCK" \
-            --start "$START_DATE" \
-            --end "$END_DATE" \
-            $OUTPUT
-        ;;
-
-    scan)
-        echo "=== 扫描持仓形态 ==="
-        PORTFOLIO="../risk_control/data/portfolio.csv"
-        if [ ! -f "$PORTFOLIO" ]; then
-            echo "错误：持仓文件不存在: $PORTFOLIO"
-            echo "请先运行风控模块生成持仓文件"
-            exit 1
-        fi
-        python3 scripts/pattern_search.py \
-            --scan "$PORTFOLIO" \
             --start "$START_DATE" \
             --end "$END_DATE" \
             $OUTPUT

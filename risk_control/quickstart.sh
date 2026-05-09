@@ -73,6 +73,10 @@ else
 fi
 echo ""
 
+# ── 风控补数需求检查 ──
+cd "$ROOT_DIR"
+python3 risk_control/data_dependencies.py --strict
+
 # ── 运行风控检查 ──
 cd "$ROOT_DIR"
 if [ -n "$EQUITY" ]; then

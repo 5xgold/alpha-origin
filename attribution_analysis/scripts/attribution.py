@@ -15,7 +15,10 @@ from config import (
     parse_benchmark_config,
 )
 from shared.data_provider import get_stock_prices, get_benchmark_prices, get_composite_benchmark_prices
-from scripts.brinson import brinson_analysis
+try:
+    from attribution_analysis.scripts.brinson import brinson_analysis
+except ModuleNotFoundError:
+    from scripts.brinson import brinson_analysis
 
 
 def load_trades(csv_path):

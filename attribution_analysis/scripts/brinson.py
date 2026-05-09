@@ -200,7 +200,7 @@ def _get_composite_benchmark_sector_data(benchmark_config, start_date, end_date)
     Returns:
         dict: {sector: {weight: float, return: float}}
     """
-    from scripts.data_provider import _fetch_hk_index_futu
+    from shared.data_provider import _fetch_hk_index_futu
 
     merged = {}
 

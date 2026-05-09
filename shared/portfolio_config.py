@@ -259,28 +259,6 @@ def load_watchlist_from_toml(toml_path: str = None) -> pd.DataFrame:
     ]]
 
 
-def sync_portfolio_to_csv(toml_path: str = None, csv_path: str = None):
-    """
-    将 portfolio.toml 同步到 CSV 文件（供旧代码兼容）
-
-    Args:
-        toml_path: TOML 文件路径
-        csv_path: CSV 输出路径，默认为 risk_control/data/portfolio.csv
-    """
-    df = load_portfolio_from_toml(toml_path)
-    # familiarity_detail 是 dict 列，CSV 不支持，导出时去掉
-    export_df = df.drop(columns=["familiarity_detail", "trade_plan", "risk_rules"], errors="ignore")
-    if csv_path is None:
-        csv_path = Path(__file__).parent.parent / "risk_control" / "data" / "portfolio.csv"
-    else:
-        csv_path = Path(csv_path)
-
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    export_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
-    print(f"✅ 持仓数据已同步到: {csv_path}")
-    print(f"   共 {len(df)} 只股票")
-
-
 if __name__ == "__main__":
     # 测试：读取并显示持仓
     try:

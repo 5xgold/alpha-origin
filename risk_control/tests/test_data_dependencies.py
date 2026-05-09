@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from risk_control.agent_price_cache import merge_incoming
+from risk_control.agent_price_cache import merge_incoming, read_cached_series
 from risk_control.data_dependencies import build_data_requirements
 from shared.data_provider import get_stock_prices, get_benchmark_prices
 
@@ -81,8 +81,9 @@ class RiskDataDependencyTests(unittest.TestCase):
             root = Path(td)
             portfolio = root / "portfolio.toml"
             portfolio.write_text(PORTFOLIO_TOML, encoding="utf-8")
-            with patch("risk_control.data_dependencies.AGENT_PRICE_CACHE_DIR", root / "agent_prices"), \
-                 patch("risk_control.data_dependencies.NEODATA_CACHE_DIR", root / "neodata"):
+            with patch("risk_control.data_dependencies.CACHE_DIR", str(root)), \
+                 patch("risk_control.data_dependencies.AGENT_PRICE_CACHE_DIR", root / "agent_prices"), \
+                 patch("risk_control.data_dependencies.read_agent_price_series", return_value=None):
                 payload = build_data_requirements("20260508", portfolio)
 
         self.assertFalse(payload["ready"])
@@ -111,7 +112,6 @@ class RiskDataDependencyTests(unittest.TestCase):
             _merge_with_patched_dirs(root, incoming_dir=incoming_dir)
 
             with patch("risk_control.data_dependencies.AGENT_PRICE_CACHE_DIR", root / "agent_prices"), \
-                 patch("risk_control.data_dependencies.NEODATA_CACHE_DIR", root / "neodata"), \
                  patch("risk_control.agent_price_cache.PRICES_DIR", root / "agent_prices" / "prices"), \
                  patch("risk_control.agent_price_cache.INDICES_DIR", root / "agent_prices" / "indices"):
                 result = build_data_requirements("20260508", portfolio)
@@ -166,7 +166,31 @@ class RiskDataDependencyTests(unittest.TestCase):
         self.assertEqual(report["errors"], [])
         self.assertTrue(price_exists)
         self.assertTrue(index_exists)
+        self.assertEqual(lines[0], "date,open,high,low,close,volume,adjust")
         self.assertTrue(lines[1].startswith("2026-05-08,"))
+        self.assertTrue(lines[1].endswith(",qfq"))
+
+    def test_agent_price_cache_records_and_filters_adjust(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            incoming_dir = root / "agent_prices" / "incoming"
+            incoming_dir.mkdir(parents=True)
+            rows = _business_day_rows(start="2026-05-01", end="2026-05-08")
+            raw_rows = [dict(row, adjust="raw", close=88.0) for row in rows]
+            qfq_rows = [dict(row, adjust="qfq") for row in rows]
+            (incoming_dir / "20260508.json").write_text(json.dumps({
+                "prices": {"600036": raw_rows + qfq_rows},
+            }), encoding="utf-8")
+            _merge_with_patched_dirs(root, incoming_dir=incoming_dir)
+
+            with patch("risk_control.agent_price_cache.PRICES_DIR", root / "agent_prices" / "prices"):
+                qfq = read_cached_series("prices", "600036", adjust="qfq")
+                raw = read_cached_series("prices", "600036", adjust="raw")
+
+        self.assertFalse(qfq.empty)
+        self.assertFalse(raw.empty)
+        self.assertEqual(float(qfq["close"].iloc[-1]), rows[-1]["close"])
+        self.assertEqual(float(raw["close"].iloc[-1]), 88.0)
 
     def test_data_provider_requires_full_agent_cache_for_stock_prices(self):
         with tempfile.TemporaryDirectory() as td:
@@ -252,8 +276,7 @@ class RiskDataDependencyTests(unittest.TestCase):
                 )
 
             with patch("risk_control.data_dependencies.CACHE_DIR", str(root)), \
-                 patch("risk_control.data_dependencies.AGENT_PRICE_CACHE_DIR", root / "agent_prices"), \
-                 patch("risk_control.data_dependencies.NEODATA_CACHE_DIR", root / "neodata"):
+                 patch("risk_control.data_dependencies.AGENT_PRICE_CACHE_DIR", root / "agent_prices"):
                 payload = build_data_requirements("20260508", portfolio)
 
         self.assertTrue(payload["ready"])

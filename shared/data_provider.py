@@ -14,222 +14,16 @@ import sys
 import os
 import json
 import atexit
-import re
+import time
+import queue
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 import pandas as pd
 import baostock as bs
 import requests
 from risk_control.agent_price_cache import read_cached_series as read_agent_price_series
-
-
-# ============================================================
-# NeoData 数据源（A股/ETF 主力，通过 QClaw 网关）
-# ============================================================
-import uuid
-
-_NEO_PROXY_PORT = os.getenv("AUTH_GATEWAY_PORT", "19000")
-_NEO_BASE_URL   = f"http://localhost:{_NEO_PROXY_PORT}/proxy/api"
-_NEO_REMOTE_URL = "https://jprx.m.qq.com/aizone/skillserver/v1/proxy/teamrouter_neodata/query"
-
-
-_NEO_CACHE_DIR = None  # lazy init after config import
-
-
-def _neo_cache_dir():
-    global _NEO_CACHE_DIR
-    if _NEO_CACHE_DIR is None:
-        _NEO_CACHE_DIR = Path(CACHE_DIR) / "neodata"
-        _NEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return _NEO_CACHE_DIR
-
-
-def _neo_cache_path(code_str: str, market: str = "a") -> Path:
-    return _neo_cache_dir() / f"{code_str}_{market}.csv"
-
-
-def _neo_load_cache(code_str: str, market: str = "a") -> pd.DataFrame:
-    """读取 NeoData 增量缓存"""
-    p = _neo_cache_path(code_str, market)
-    if not p.exists():
-        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
-    df = pd.read_csv(p, parse_dates=["date"])
-    return df
-
-
-def _neo_save_cache(df: pd.DataFrame, code_str: str, market: str = "a"):
-    """写入 NeoData 增量缓存（去重、按日期排序）"""
-    if df.empty:
-        return
-    p = _neo_cache_path(code_str, market)
-    existing = _neo_load_cache(code_str, market)
-    if not existing.empty:
-        combined = pd.concat([existing, df], ignore_index=True)
-    else:
-        combined = df.copy()
-    combined["date"] = pd.to_datetime(combined["date"])
-    combined = combined.drop_duplicates(subset=["date"]).sort_values("date").reset_index(drop=True)
-    combined.to_csv(p, index=False)
-
-
-def _neo_cached_fetch(code_str: str, start_date: str, end_date: str,
-                      market: str, fetch_fn) -> pd.DataFrame:
-    """带增量缓存的 NeoData 获取：缓存已覆盖则直接返回，否则调 API 并合并"""
-    cached = _neo_load_cache(code_str, market)
-    sd = pd.to_datetime(start_date)
-    ed = pd.to_datetime(end_date)
-
-    if not cached.empty:
-        cached_min = cached["date"].min()
-        cached_max = cached["date"].max()
-        if cached_min <= sd and cached_max >= ed:
-            sliced = cached[(cached["date"] >= sd) & (cached["date"] <= ed)].reset_index(drop=True)
-            if not sliced.empty:
-                return sliced
-        today = pd.to_datetime(datetime.now().strftime("%Y-%m-%d"))
-        if cached_max >= ed and cached_max < today:
-            sliced = cached[(cached["date"] >= sd) & (cached["date"] <= ed)].reset_index(drop=True)
-            if not sliced.empty:
-                return sliced
-
-    df = fetch_fn()
-    if df is not None and not df.empty:
-        _neo_save_cache(df, code_str, market)
-        full = _neo_load_cache(code_str, market)
-        return full[(full["date"] >= sd) & (full["date"] <= ed)].reset_index(drop=True)
-
-    if not cached.empty:
-        sliced = cached[(cached["date"] >= sd) & (cached["date"] <= ed)].reset_index(drop=True)
-        if not sliced.empty:
-            return sliced
-
-    return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
-
-
-def _call_neodata(query: str) -> dict:
-    """发请求到 NeoData，返回原始 dict"""
-    payload = {
-        "channel": "neodata", "sub_channel": "qclaw", "query": query,
-        "request_id": uuid.uuid4().hex, "data_type": "api",
-        "se_params": {}, "extra_params": {},
-    }
-    headers = {"Content-Type": "application/json", "Remote-URL": _NEO_REMOTE_URL}
-    resp = requests.post(_NEO_BASE_URL, headers=headers, json=payload, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def _neo_parse_kline(content: str) -> pd.DataFrame:
-    """解析 NeoData 股票历史走势表格 → DataFrame[date,open,high,low,close,volume]"""
-    rows = []
-    for line in content.splitlines():
-        line = line.strip()
-        if not line.startswith("|"):
-            continue
-        parts = [p.strip() for p in line.split("|")]
-        parts = [p for p in parts if p]
-        if len(parts) == 9 and parts[0].startswith("20"):
-            date_str = parts[0]
-            try:
-                open_p = float(parts[1])
-                close_p = float(parts[2])
-                vol = int(parts[4].replace(",", "").replace(".00", ""))
-                high_p = float(parts[6]) if parts[6] else close_p
-                low_p = float(parts[7]) if parts[7] else close_p
-            except ValueError:
-                continue
-            rows.append({"date": date_str, "open": open_p, "high": high_p,
-                        "low": low_p, "close": close_p, "volume": vol})
-    if not rows:
-        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
-    df = pd.DataFrame(rows)
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df.dropna(subset=["date"])
-    df = df.sort_values("date").reset_index(drop=True)
-    return df
-
-
-def _neo_parse_etf_kline(content: str) -> pd.DataFrame:
-    """解析 NeoData 基金历史行情表格 → DataFrame[date,open,high,low,close,volume]"""
-    rows = []
-    in_table = False
-    for line in content.splitlines():
-        line = line.strip()
-        if line.startswith("|") and "开盘价" in line and "日期" in line:
-            in_table = True
-            continue
-        if in_table and line.startswith("|"):
-            parts = [p.strip() for p in line.strip("|").split("|")]
-            if len(parts) >= 6 and parts[-1].startswith("20"):
-                date_str = parts[-1]
-                try:
-                    open_p = float(parts[0])
-                    close_p = float(parts[1])
-                    high_p = float(parts[2]) if parts[2] else close_p
-                    low_p = float(parts[3]) if parts[3] else close_p
-                    vol = int(float(parts[4].replace(",", "").replace(".00", "")))
-                except ValueError:
-                    continue
-                rows.append({"date": date_str, "open": open_p, "high": high_p,
-                            "low": low_p, "close": close_p, "volume": vol})
-    if not rows:
-        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
-    df = pd.DataFrame(rows)
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df.dropna(subset=["date"])
-    df = df.sort_values("date").reset_index(drop=True)
-    return df
-
-
-def _fetch_neodata_a_raw(code_str: str) -> pd.DataFrame:
-    """NeoData A 股原始 API 调用（不含缓存逻辑）"""
-    result = _call_neodata(f"{code_str} 近期行情 日K线")
-    data = result.get("data", {})
-    recall = data.get("apiData", {}).get("apiRecall", [])
-    for item in recall:
-        if "历史走势" in item.get("type", ""):
-            df = _neo_parse_kline(item.get("content", ""))
-            if not df.empty:
-                return df
-    return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
-
-
-def _fetch_neodata_a_prices(code_str: str, start_date: str, end_date: str,
-                             _adjust: str = "qfq") -> pd.DataFrame:
-    """NeoData 获取 A 股历史 K 线（带增量缓存）"""
-    try:
-        return _neo_cached_fetch(
-            code_str, start_date, end_date, market="a",
-            fetch_fn=lambda: _fetch_neodata_a_raw(code_str),
-        )
-    except Exception as e:
-        raise RuntimeError(f"NeoData 请求失败: {e}") from e
-
-
-def _fetch_neodata_etf_raw(code_str: str) -> pd.DataFrame:
-    """NeoData ETF 原始 API 调用（不含缓存逻辑）"""
-    result = _call_neodata(f"{code_str} ETF基金 近期行情 日K线")
-    data = result.get("data", {})
-    recall = data.get("apiData", {}).get("apiRecall", [])
-    for item in recall:
-        if "基金历史行情" in item.get("type", ""):
-            df = _neo_parse_etf_kline(item.get("content", ""))
-            if not df.empty:
-                return df
-    return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
-
-
-def _fetch_neodata_etf_prices(code_str: str, start_date: str, end_date: str,
-                              _adjust: str = "qfq") -> pd.DataFrame:
-    """NeoData 获取 ETF 基金历史 K 线（带增量缓存）"""
-    try:
-        return _neo_cached_fetch(
-            code_str, start_date, end_date, market="etf",
-            fetch_fn=lambda: _fetch_neodata_etf_raw(code_str),
-        )
-    except Exception as e:
-        raise RuntimeError(f"NeoData ETF 请求失败: {e}") from e
 
 
 sys.path.append(str(Path(__file__).parent.parent))
@@ -243,11 +37,13 @@ _bs_unavailable = False  # 标记 baostock 不可用，避免重复超时
 
 # baostock 调用超时（秒）— 影响 connect + recv
 _BS_TIMEOUT = int(os.getenv("BS_TIMEOUT", "30"))
+_BS_LOGIN_RETRIES = int(os.getenv("BS_LOGIN_RETRIES", "3"))
 
 # ============================================================
 # 数据降级追踪
 # ============================================================
 _data_degradations = []  # [(source, scope, reason)]
+_ALLOW_EXTERNAL_MARKET_DATA = True
 
 
 def _record_degradation(source: str, scope: str, reason: str = ""):
@@ -267,6 +63,34 @@ def clear_data_degradations():
     _data_degradations.clear()
 
 
+@contextmanager
+def local_market_data_only():
+    """禁止外部行情刷新，只读取本地 agent/stocks/benchmark cache。"""
+    global _ALLOW_EXTERNAL_MARKET_DATA
+    previous = _ALLOW_EXTERNAL_MARKET_DATA
+    _ALLOW_EXTERNAL_MARKET_DATA = False
+    try:
+        yield
+    finally:
+        _ALLOW_EXTERNAL_MARKET_DATA = previous
+
+
+def latest_baostock_available_date(now=None) -> str:
+    """返回 baostock 默认已入库的最近 A 股交易日（YYYYMMDD）。
+
+    baostock 当日行情通常 17:30 后入库；周末默认回退到上一个工作日。
+    这里不内置节假日日历，遇到节假日时 baostock 查询会自然返回最近可用历史数据。
+    """
+    current = now or datetime.now()
+    cutoff_passed = (current.hour, current.minute) >= (17, 30)
+    candidate = current
+    if current.weekday() >= 5 or not cutoff_passed:
+        candidate = current - timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate = candidate - timedelta(days=1)
+    return candidate.strftime("%Y%m%d")
+
+
 def _ensure_bs_login():
     global _bs_logged_in, _bs_unavailable
     if _bs_unavailable:
@@ -276,20 +100,35 @@ def _ensure_bs_login():
         # 设置全局 socket 超时，让 baostock 的 connect/recv 不会无限阻塞
         prev_timeout = _socket.getdefaulttimeout()
         _socket.setdefaulttimeout(_BS_TIMEOUT)
+        last_error = None
         try:
-            result = bs.login()
-            if result.error_code != '0':
+            for attempt in range(1, max(_BS_LOGIN_RETRIES, 1) + 1):
+                try:
+                    result = bs.login()
+                    if result.error_code == '0':
+                        break
+                    last_error = RuntimeError(f"baostock login 失败: {result.error_msg}")
+                except Exception as e:
+                    last_error = e
+                if attempt < max(_BS_LOGIN_RETRIES, 1):
+                    time.sleep(1.0 * attempt)
+            else:
+                result = None
+
+            if result is None or result.error_code != '0':
+                msg = str(last_error) if last_error else "未知错误"
                 _bs_unavailable = True
-                _record_degradation("baostock", "全部", f"login 失败: {result.error_msg}")
-                _socket.setdefaulttimeout(prev_timeout)
-                raise RuntimeError(f"baostock login 失败: {result.error_msg}")
+                _record_degradation("baostock", "全部", f"login 失败: {msg}")
+                raise RuntimeError(f"baostock login 失败: {msg}")
         except RuntimeError:
             raise
         except Exception as e:
             _bs_unavailable = True
             _record_degradation("baostock", "全部", f"连接超时 ({_BS_TIMEOUT}s)")
-            _socket.setdefaulttimeout(prev_timeout)
             raise RuntimeError(f"baostock login 异常 (timeout={_BS_TIMEOUT}s): {e}") from e
+        finally:
+            _socket.setdefaulttimeout(prev_timeout)
+
         # login 成功后，给已创建的 socket 也设置超时
         try:
             import baostock.common.context as bs_ctx
@@ -298,9 +137,28 @@ def _ensure_bs_login():
                 sock.settimeout(_BS_TIMEOUT)
         except Exception:
             pass
-        _socket.setdefaulttimeout(prev_timeout)
         _bs_logged_in = True
         atexit.register(bs.logout)
+
+
+def _bs_logout():
+    global _bs_logged_in
+    if not _bs_logged_in:
+        return
+    try:
+        bs.logout()
+    finally:
+        _bs_logged_in = False
+
+
+@contextmanager
+def baostock_session():
+    """显式管理 baostock 会话，适合批量查询后立即登出。"""
+    _ensure_bs_login()
+    try:
+        yield
+    finally:
+        _bs_logout()
 
 
 # ============================================================
@@ -309,19 +167,36 @@ def _ensure_bs_login():
 
 
 def _run_with_timeout(fn, timeout=None):
-    """在线程池中执行 fn()，超时则抛出 TimeoutError。
+    """在 daemon 线程中执行 fn()，超时后主线程立即返回。
 
-    baostock 内部使用阻塞 socket，signal.alarm 在主线程可用但不适合
-    多线程场景，这里用 ThreadPoolExecutor 做超时控制。
+    不能使用 ThreadPoolExecutor 的 context manager：baostock 卡在 socket recv
+    时，executor shutdown 会等待工作线程结束，导致“软超时”仍然卡住主流程。
     """
+    global _bs_unavailable
     if timeout is None:
         timeout = _BS_TIMEOUT
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(fn)
+
+    result_queue = queue.Queue(maxsize=1)
+
+    def _target():
         try:
-            return future.result(timeout=timeout)
-        except FuturesTimeoutError:
-            raise TimeoutError(f"baostock 调用超时 ({timeout}s)")
+            result_queue.put(("ok", fn()), block=False)
+        except Exception as e:
+            result_queue.put(("error", e), block=False)
+
+    thread = threading.Thread(target=_target, daemon=True)
+    thread.start()
+    thread.join(timeout)
+
+    if thread.is_alive():
+        _bs_unavailable = True
+        _record_degradation("baostock", "全部", f"调用硬超时 ({timeout}s)")
+        raise TimeoutError(f"baostock 调用硬超时 ({timeout}s)")
+
+    status, payload = result_queue.get_nowait()
+    if status == "error":
+        raise payload
+    return payload
 
 
 def _to_bs_code(code_str):
@@ -474,87 +349,6 @@ def _find_missing_benchmark_dates(df: pd.DataFrame, start_date: str, end_date: s
     return missing
 
 
-def _infer_a_index_exchange(benchmark_index: str) -> str:
-    return "SZ" if str(benchmark_index).startswith("399") else "SH"
-
-
-def _fetch_neodata_a_index_snapshot(benchmark_index: str) -> pd.DataFrame:
-    """用 NeoData 拉取 A 股指数当日快照，补到本地历史缓存。"""
-    exchange = _infer_a_index_exchange(benchmark_index)
-    query = f"{benchmark_index}.{exchange} A股指数 今日行情"
-    result = _call_neodata(query)
-    recall = result.get("data", {}).get("apiData", {}).get("apiRecall", [])
-    target_code = f"{benchmark_index}.{exchange}"
-
-    for item in recall:
-        if "股票实时行情" not in item.get("type", ""):
-            continue
-        content = item.get("content", "")
-        if target_code not in content:
-            continue
-
-        def _extract(patterns):
-            for pattern in patterns:
-                match = re.search(pattern, content)
-                if match:
-                    return match.group(1).replace(",", "").strip()
-            return None
-
-        date_text = _extract([r"数据更新时间:\s*([0-9/\-]{10})"])
-        close_text = _extract([r"最新价格:\s*([0-9,]+(?:\.[0-9]+)?)"])
-        open_text = _extract([r"今日开盘价格:\s*([0-9,]+(?:\.[0-9]+)?)"])
-        high_text = _extract([r"最高(?:点|价):\s*([0-9,]+(?:\.[0-9]+)?)"])
-        low_text = _extract([r"最低(?:点|价):\s*([0-9,]+(?:\.[0-9]+)?)"])
-        volume_text = _extract([r"成交数量\(手\):\s*([0-9,]+)"])
-
-        if not date_text or not close_text:
-            continue
-
-        close_px = float(close_text)
-        open_px = float(open_text) if open_text else close_px
-        high_px = float(high_text) if high_text else close_px
-        low_px = float(low_text) if low_text else close_px
-        volume = int(volume_text) * 100 if volume_text else 0
-
-        return _normalize_ohlcv_frame(pd.DataFrame([{
-            "date": date_text.replace("/", "-"),
-            "open": open_px,
-            "high": high_px,
-            "low": low_px,
-            "close": close_px,
-            "volume": volume,
-        }]))
-
-    return _empty_benchmark_df()
-
-
-def _fetch_neodata_index_kline(benchmark_index: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """用 NeoData 拉取 A 股指数历史 K 线（近期行情）"""
-    _INDEX_NAMES = {
-        "000001": "上证指数", "000300": "沪深300", "000905": "中证500",
-        "399001": "深证成指", "399006": "创业板指",
-    }
-    name = _INDEX_NAMES.get(str(benchmark_index), str(benchmark_index))
-    query = f"{name} 近期行情 日K线"
-    try:
-        result = _call_neodata(query)
-    except Exception:
-        return _empty_benchmark_df()
-
-    recall = result.get("data", {}).get("apiData", {}).get("apiRecall", [])
-    for item in recall:
-        item_type = item.get("type", "")
-        if "历史走势" in item_type:
-            df = _neo_parse_kline(item.get("content", ""))
-            if not df.empty:
-                start_ts = pd.to_datetime(start_date)
-                end_ts = pd.to_datetime(end_date)
-                df = df[(df["date"] >= start_ts) & (df["date"] <= end_ts)]
-                if not df.empty:
-                    return df
-    return _empty_benchmark_df()
-
-
 # ============================================================
 # ETF 行业分类（从 brinson.py 迁移）
 # ============================================================
@@ -615,19 +409,38 @@ def _classify_etf(name):
 _EMPTY_PRICE_DF = pd.DataFrame(columns=['date', 'open', 'high', 'low', 'close', 'volume'])
 
 
+def _normalize_price_adjust(adjust):
+    text = str(adjust or "raw").strip().lower()
+    if text in ("", "none", "raw", "no_adjust", "unadjusted", "3"):
+        return "raw"
+    if text in ("qfq", "forward", "forward_adjusted", "2"):
+        return "qfq"
+    if text in ("hfq", "backward", "backward_adjusted", "1"):
+        return "hfq"
+    return text
+
+
 def _agent_price_cache_dir() -> Path:
     path = Path(CACHE_DIR) / "agent_prices"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def _normalize_agent_price_rows(rows, require_ohlcv=True):
+def _normalize_agent_price_rows(rows, require_ohlcv=True, adjust=None):
     if not rows:
         return _EMPTY_PRICE_DF.copy()
     df = pd.DataFrame(rows)
     if "date" not in df.columns or "close" not in df.columns:
         return _EMPTY_PRICE_DF.copy()
     df = df.copy()
+    if adjust is not None:
+        wanted_adjust = _normalize_price_adjust(adjust)
+        if "adjust" not in df.columns:
+            df["adjust"] = "qfq"
+        df["adjust"] = df["adjust"].map(_normalize_price_adjust)
+        df = df[df["adjust"] == wanted_adjust]
+        if df.empty:
+            return _EMPTY_PRICE_DF.copy()
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df["close"] = pd.to_numeric(df["close"], errors="coerce")
     if require_ohlcv:
@@ -651,10 +464,15 @@ def _normalize_agent_price_rows(rows, require_ohlcv=True):
     return df[cols].drop_duplicates(subset=["date"]).reset_index(drop=True)
 
 
-def _load_agent_cached_series(code, start_date, end_date, section="prices", require_ohlcv=True):
-    cached = read_agent_price_series(section, code, start_date, end_date)
+def _load_agent_cached_series(code, start_date, end_date, section="prices", require_ohlcv=True, adjust="qfq"):
+    cached_adjust = adjust if section == "prices" else None
+    cached = read_agent_price_series(section, code, start_date, end_date, adjust=cached_adjust)
     if cached is not None and not cached.empty:
-        return _normalize_agent_price_rows(cached.to_dict(orient="records"), require_ohlcv=require_ohlcv)
+        return _normalize_agent_price_rows(
+            cached.to_dict(orient="records"),
+            require_ohlcv=require_ohlcv,
+            adjust=cached_adjust,
+        )
 
     cache_dir = _agent_price_cache_dir()
     frames = []
@@ -668,7 +486,7 @@ def _load_agent_cached_series(code, start_date, end_date, section="prices", requ
         if not rows and not code_str.startswith("0"):
             rows = payload.get(section, {}).get(code_str.zfill(6), [])
         if rows:
-            df = _normalize_agent_price_rows(rows, require_ohlcv=require_ohlcv)
+            df = _normalize_agent_price_rows(rows, require_ohlcv=require_ohlcv, adjust=cached_adjust)
             if not df.empty:
                 frames.append(df)
     if not frames:
@@ -697,11 +515,10 @@ def _agent_cache_covers_request(df, start_date, end_date, min_coverage=1.0):
 # 按优先级排列，第一个成功即返回
 _SOURCE_REGISTRY = {
     'a_stock': [
-        ('neodata', '_fetch_neodata_a_prices'),
         ('baostock', '_fetch_a_stock_prices'),
     ],
     'etf': [
-        ('neodata', '_fetch_neodata_etf_prices'),
+        ('baostock', '_fetch_a_stock_prices'),
     ],
     'hk_stock': [
         ('futu', '_fetch_hk_futu'),
@@ -734,7 +551,7 @@ def _fetch_with_fallback(sources, code_str, start_date, end_date, adjust="qfq"):
 def get_stock_prices(code, start_date, end_date, adjust="qfq"):
     """获取股票历史行情（带缓存、多数据源 fallback）
 
-    A股 → baostock, 港股 → FutuOpenD → 东方财富
+    A股/ETF → baostock, 港股 → FutuOpenD
     返回 DataFrame[date, open, close, high, low, volume]
 
     Args:
@@ -751,7 +568,14 @@ def get_stock_prices(code, start_date, end_date, adjust="qfq"):
     if not is_hk:
         code_str = code_str.zfill(6)
 
-    agent_df = _load_agent_cached_series(code_str, start_date, end_date, section="prices", require_ohlcv=True)
+    agent_df = _load_agent_cached_series(
+        code_str,
+        start_date,
+        end_date,
+        section="prices",
+        require_ohlcv=True,
+        adjust=adjust,
+    )
     if _agent_cache_covers_request(agent_df, start_date, end_date, min_coverage=1.0):
         return agent_df
 
@@ -767,6 +591,9 @@ def get_stock_prices(code, start_date, end_date, adjust="qfq"):
             return cached_df
 
     try:
+        if not _ALLOW_EXTERNAL_MARKET_DATA:
+            raise RuntimeError("外部行情刷新已禁用")
+
         # ETF 检测（深交所 15/16 开头，或沪市 5 开头带 ETF 关键字时走 ETF 路径）
         is_etf = code_str[:2] in ("15", "16") or (code_str[0] == "5" and len(code_str) == 6)
         market = 'hk_stock' if is_hk else ('etf' if is_etf else 'a_stock')
@@ -804,8 +631,8 @@ def _fetch_a_stock_prices(code_str, start_date, end_date, adjust="qfq"):
 
     Args:
         adjust: 复权方式
-                - "qfq" 前复权（adjustflag="1"）
-                - "hfq" 后复权（adjustflag="2"）
+                - "qfq" 前复权（adjustflag="2"）
+                - "hfq" 后复权（adjustflag="1"）
                 - "" 不复权（adjustflag="3"）
     """
     _ensure_bs_login()
@@ -813,11 +640,11 @@ def _fetch_a_stock_prices(code_str, start_date, end_date, adjust="qfq"):
 
     # 转换复权参数
     adjust_map = {
-        "qfq": "1",  # 前复权
-        "hfq": "2",  # 后复权
+        "qfq": "2",  # 前复权
+        "hfq": "1",  # 后复权
         "": "3",     # 不复权
     }
-    adjustflag = adjust_map.get(adjust, "1")  # 默认前复权
+    adjustflag = adjust_map.get(adjust, "2")  # 默认前复权
 
     def _query():
         rs = bs.query_history_k_data_plus(
@@ -828,6 +655,8 @@ def _fetch_a_stock_prices(code_str, start_date, end_date, adjust="qfq"):
             frequency="d",
             adjustflag=adjustflag,
         )
+        if rs.error_code != '0':
+            raise RuntimeError(f"baostock query 失败: {rs.error_msg}")
         rows = []
         while (rs.error_code == '0') and rs.next():
             rows.append(rs.get_row_data())
@@ -838,7 +667,8 @@ def _fetch_a_stock_prices(code_str, start_date, end_date, adjust="qfq"):
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = pd.to_numeric(df[col], errors='coerce')
     df = df.dropna(subset=["close"])
-    return df
+    df['date'] = pd.to_datetime(df['date'])
+    return df.sort_values('date').reset_index(drop=True)
 
 
 def _fetch_hk_futu(code_str, start_date, end_date, adjust="qfq"):
@@ -962,18 +792,6 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
     if not sliced.empty and sliced["date"].min() <= start_ts and sliced["date"].max() >= required_end:
         return sliced
 
-    if "." not in str(benchmark_index):
-        try:
-            latest_bar = _fetch_neodata_a_index_snapshot(str(benchmark_index))
-            if not latest_bar.empty:
-                series_df = _merge_benchmark_series(series_df, latest_bar)
-                _save_benchmark_series(series_df, benchmark_index)
-                sliced = _slice_benchmark_series(series_df, start_date, end_date)
-                if not sliced.empty and sliced["date"].min() <= start_ts and sliced["date"].max() >= required_end:
-                    return sliced
-        except Exception:
-            pass
-
     cache_file = Path(CACHE_DIR) / f"benchmark_{benchmark_index}_{start_date}_{end_date}.csv"
     cache_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -989,6 +807,11 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
 
     sliced = _slice_benchmark_series(series_df, start_date, end_date)
     missing_dates = _find_missing_benchmark_dates(sliced, start_date, end_date)
+    if not _ALLOW_EXTERNAL_MARKET_DATA:
+        if not sliced.empty:
+            return sliced
+        raise RuntimeError(f"本地缓存缺少基准指数 {benchmark_index} 数据")
+
     if missing_dates and len(missing_dates) <= 10:
         for missing_date in missing_dates:
             try:
@@ -1025,19 +848,6 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
             if not _find_missing_benchmark_dates(sliced, start_date, end_date):
                 return sliced
 
-    # NeoData 指数 K 线（优先于 baostock，覆盖近期数据）
-    if "." not in str(benchmark_index):
-        try:
-            neo_df = _fetch_neodata_index_kline(str(benchmark_index), start_date, end_date)
-            if not neo_df.empty:
-                series_df = _merge_benchmark_series(series_df, neo_df)
-                _save_benchmark_series(series_df, benchmark_index)
-                sliced = _slice_benchmark_series(series_df, start_date, end_date)
-                if not _find_missing_benchmark_dates(sliced, start_date, end_date):
-                    return sliced
-        except Exception:
-            pass
-
     try:
         _ensure_bs_login()
 
@@ -1052,6 +862,8 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
                     end_date=_to_bs_date(ed),
                     frequency="d",
                 )
+                if rs.error_code != '0':
+                    continue
                 rows = []
                 while (rs.error_code == '0') and rs.next():
                     rows.append(rs.get_row_data())

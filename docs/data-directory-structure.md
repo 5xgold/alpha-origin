@@ -18,8 +18,7 @@ PythonProjects/
 │   ├── asset_summary.json          # 账户资产摘要
 │   └── cache/                      # 模块专属缓存（如有）
 │
-├── risk_control/data/              # 风控专属数据
-│   └── portfolio.csv               # 当前持仓（从portfolio.toml同步）
+├── risk_control/data/              # 风控运行数据（不存持仓源）
 │
 ├── llm_digest/data/                # LLM专属数据
 │   └── earnings/                   # 财报PDF存放目录
@@ -85,17 +84,7 @@ python shared/convert_broker_data.py --input data/raw/对账单.pdf --output-dir
 
 ### risk_control/data/
 
-**用途：** 风控模块的输入数据
-
-**文件：**
-- `portfolio.csv` - 当前持仓（从 portfolio.toml 同步）
-
-**生成方式：**
-```bash
-python shared/portfolio_config.py
-# 或
-./quickstart.sh sync-portfolio
-```
+**用途：** 风控模块运行过程中的本地数据。账户、持仓和持仓级策略配置统一读取项目根目录 `portfolio.toml`。
 
 **依赖：** 仅风控模块使用
 
@@ -131,15 +120,15 @@ python shared/portfolio_config.py
    attribution_analysis/data/trades.csv
    attribution_analysis/data/holdings.csv
    ↓
-4. 持仓同步
-   portfolio.toml → risk_control/data/portfolio.csv
+4. 风控配置
+   portfolio.toml
    ↓
-5. 行情数据获取
+5. 行情数据获取/补缺口
    shared.data_provider → data/cache/*.csv
    ↓
 6. 各模块独立运行
    - attribution_analysis: 读取 trades.csv + 行情数据
-   - risk_control: 读取 portfolio.csv + 行情数据
+   - risk_control: 读取 portfolio.toml + 行情 cache
    - pattern_finder: 读取行情数据 + 样本库
 ```
 
@@ -191,8 +180,8 @@ rm -rf data/cache/pattern_finder/
 # 清理归因分析数据（需要重新解析PDF）
 rm -rf attribution_analysis/data/*
 
-# 清理风控数据（需要重新同步持仓）
-rm -rf risk_control/data/portfolio.csv
+# 清理风控运行数据（不删除 portfolio.toml）
+rm -rf risk_control/data/*
 ```
 
 ### 清理输出报告

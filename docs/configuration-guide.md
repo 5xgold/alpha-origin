@@ -103,19 +103,19 @@ cp portfolio.toml.example portfolio.toml
 # 2. 编辑 portfolio.toml，填入你的实际持仓
 vim portfolio.toml
 
-# 3. 同步到 CSV（供各模块使用）
-./quickstart.sh sync-portfolio
+# 3. 直接运行风控；风控会读取 portfolio.toml
+./quickstart.sh risk
 ```
 
 ### 更新持仓
 
-每次修改 `portfolio.toml` 后，运行同步命令：
+每次修改 `portfolio.toml` 后，直接运行风控即可：
 
 ```bash
-./quickstart.sh sync-portfolio
+./quickstart.sh risk
 ```
 
-这会将 TOML 配置转换为 CSV 格式，供风控模块和形态检索模块使用。
+风控模块直接读取 TOML 配置，不再同步成 CSV。
 
 ## 配置文件位置
 
@@ -124,8 +124,7 @@ PythonProjects/
 ├── .env                      # API 密钥（不提交）
 ├── portfolio.toml            # 持仓配置（不提交）
 ├── portfolio.toml.example    # 持仓示例（提交到 Git）
-├── risk_control/data/
-│   └── portfolio.csv         # 自动生成，不需要手动编辑
+├── risk_control/data/        # 风控运行数据，不存持仓源
 ```
 
 ## 为什么分两个文件？
@@ -156,22 +155,6 @@ portfolio.toml
 - 定期备份到安全位置
 - 或使用私有 Git 仓库单独管理
 
-⚠️ **同步提醒**
+⚠️ **风控读取来源**
 
-修改 `portfolio.toml` 后记得运行：
-```bash
-./quickstart.sh sync-portfolio
-```
-
-否则风控模块会使用旧的持仓数据。
-
-## 自动同步（可选）
-
-如果希望每次运行风控前自动同步，可以在 `risk_control/quickstart.sh` 开头添加：
-
-```bash
-# 自动同步持仓配置
-if [ -f "../portfolio.toml" ]; then
-    python3 ../shared/portfolio_config.py
-fi
-```
+风控模块只读取 `portfolio.toml` 作为账户、持仓和持仓级策略配置来源，不读取 CSV 同步文件或归因模块中间结果。

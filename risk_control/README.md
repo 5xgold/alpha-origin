@@ -5,23 +5,29 @@
 ## 快速开始
 
 ```bash
-# 一键运行（首次会自动安装依赖）
-./quickstart.sh 500000
+# 从项目根目录运行，默认读取 portfolio.toml
+../quickstart.sh risk
 
-# 自定义持仓文件
-./quickstart.sh 500000 data/portfolio.csv
+# 如需临时覆盖总权益
+../quickstart.sh risk 500000
 ```
 
 参数说明：
-- `总权益`：券商账户总资产（股票市值 + 现金余额），登录券商 APP 查看"总资产"即可
-- `持仓CSV`：当前持仓文件，默认 `data/portfolio.csv`
+- `总权益`：默认读取 `portfolio.toml` 的 `[account].total_equity`，命令行参数仅用于临时覆盖
 
-### 持仓文件格式
+### 持仓配置格式
 
-```csv
-code,name,market,quantity,cost_price
-601216,君正集团,上海,9100,5.5243
-00696,中国民航信息网络,沪港通,10000,0.0
+```toml
+[account]
+total_equity = 500000
+
+[[holdings]]
+code = "601216"
+name = "君正集团"
+market = "上海"
+quantity = 9100
+cost_price = 5.5243
+trade_plan = {status = "active", stop_loss_strategy = "atr"}
 ```
 
 - `cost_price` 为 0 表示成本未知（如担保品划入），止损会基于当前价计算

@@ -84,7 +84,6 @@ class RiskControlTests(unittest.TestCase):
              patch.object(data_provider, "CACHE_DIR", tmpdir), \
              patch.object(data_provider, "_cache_valid", return_value=False), \
              patch.object(data_provider, "_load_latest_matching_cache", return_value=(None, None)), \
-             patch.object(data_provider, "_fetch_neodata_a_index_snapshot", return_value=pd.DataFrame()), \
              patch.object(data_provider, "_ensure_bs_login"), \
              patch.object(data_provider.bs, "query_history_k_data_plus", return_value=DummyQueryResult()):
             with self.assertRaisesRegex(RuntimeError, "获取基准指数 000300 失败"):
@@ -102,7 +101,6 @@ class RiskControlTests(unittest.TestCase):
 
         with TemporaryDirectory() as tmpdir, \
              patch.object(data_provider, "CACHE_DIR", tmpdir), \
-             patch.object(data_provider, "_fetch_neodata_a_index_snapshot", return_value=pd.DataFrame()), \
              patch.object(data_provider, "_ensure_bs_login") as ensure_login:
             legacy_path = Path(tmpdir) / "benchmark_000300_20240101_20240103.csv"
             legacy.to_csv(legacy_path, index=False)

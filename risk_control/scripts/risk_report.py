@@ -14,7 +14,14 @@ import numpy as np
 import pandas as pd
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from shared.data_provider import get_stock_prices, get_benchmark_prices, get_composite_benchmark_prices
+from shared.data_provider import (
+    get_stock_prices,
+    get_benchmark_prices,
+    get_composite_benchmark_prices,
+    baostock_session,
+    latest_baostock_available_date,
+    local_market_data_only,
+)
 from shared.portfolio_config import load_account_config, load_portfolio_from_toml
 from shared.config import parse_benchmark_config
 from risk_control.config import (
@@ -56,7 +63,7 @@ def _market_index_label(components):
     return " + ".join(parts)
 
 
-def fetch_prices(portfolio_df, lookback_days=None):
+def fetch_prices(portfolio_df, lookback_days=None, refresh_market_data=False):
     """获取持仓股票 + 市场指数的历史行情
 
     Returns:
@@ -67,33 +74,56 @@ def fetch_prices(portfolio_df, lookback_days=None):
     if lookback_days is None:
         lookback_days = max(PORTFOLIO_LOOKBACK_DAYS, ATR_PERIOD * 3)
 
-    end_date = datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.now() - timedelta(days=int(lookback_days * 1.8))).strftime("%Y%m%d")
+    end_date = latest_baostock_available_date()
+    start_date = (datetime.strptime(end_date, "%Y%m%d") - timedelta(days=int(lookback_days * 1.8))).strftime("%Y%m%d")
 
     prices_dict = {}
     codes = portfolio_df["code"].astype(str).tolist()
-
-    for code in codes:
-        try:
-            df = get_stock_prices(code, start_date, end_date)
-            if df is not None and not df.empty:
-                if "date" in df.columns:
-                    df["date"] = pd.to_datetime(df["date"])
-                prices_dict[code] = df
-        except Exception as e:
-            print(f"  警告: {code} 行情获取失败: {e}")
 
     # 市场指数（支持单指数或多指数合成）
     components = parse_benchmark_config(MARKET_INDEX)
     market_index_name = _market_index_label(components)
     market_prices = None
+
+    market_data_context = baostock_session() if refresh_market_data else local_market_data_only()
+
     try:
-        if len(components) == 1:
-            market_prices = get_benchmark_prices(components[0]["index"], start_date, end_date)
-        else:
-            market_prices = get_composite_benchmark_prices(components, start_date, end_date)
+        with market_data_context:
+            for code in codes:
+                try:
+                    df = get_stock_prices(code, start_date, end_date)
+                    if df is not None and not df.empty:
+                        if "date" in df.columns:
+                            df["date"] = pd.to_datetime(df["date"])
+                        prices_dict[code] = df
+                except Exception as e:
+                    print(f"  警告: {code} 行情获取失败: {e}")
+
+            try:
+                if len(components) == 1:
+                    market_prices = get_benchmark_prices(components[0]["index"], start_date, end_date)
+                else:
+                    market_prices = get_composite_benchmark_prices(components, start_date, end_date)
+            except Exception as e:
+                print(f"  警告: {market_index_name} 行情获取失败: {e}")
     except Exception as e:
-        print(f"  警告: {market_index_name} 行情获取失败: {e}")
+        print(f"  警告: 行情上下文初始化失败，改用缓存降级: {e}")
+        for code in codes:
+            try:
+                df = get_stock_prices(code, start_date, end_date)
+                if df is not None and not df.empty:
+                    if "date" in df.columns:
+                        df["date"] = pd.to_datetime(df["date"])
+                    prices_dict[code] = df
+            except Exception as fetch_error:
+                print(f"  警告: {code} 行情获取失败: {fetch_error}")
+        try:
+            if len(components) == 1:
+                market_prices = get_benchmark_prices(components[0]["index"], start_date, end_date)
+            else:
+                market_prices = get_composite_benchmark_prices(components, start_date, end_date)
+        except Exception as fetch_error:
+            print(f"  警告: {market_index_name} 行情获取失败: {fetch_error}")
 
     return prices_dict, market_prices, market_index_name
 
@@ -438,7 +468,7 @@ def _json_default(value):
 # 主流程
 # ═══════════════════════════════════════════
 
-def build_risk_snapshot(total_equity):
+def build_risk_snapshot(total_equity, refresh_market_data=False):
     """执行完整风控检查并返回结构化快照"""
     today = datetime.now().strftime("%Y-%m-%d")
 
@@ -446,7 +476,10 @@ def build_risk_snapshot(total_equity):
     portfolio_df = load_portfolio_from_toml(str(DEFAULT_PORTFOLIO_TOML))
 
     # 2. 获取行情
-    prices_dict, market_prices, market_index_name = fetch_prices(portfolio_df)
+    prices_dict, market_prices, market_index_name = fetch_prices(
+        portfolio_df,
+        refresh_market_data=refresh_market_data,
+    )
 
     # 3. 丰富持仓数据
     portfolio_df = enrich_portfolio(portfolio_df, prices_dict)
@@ -542,9 +575,9 @@ def export_risk_snapshot(snapshot, output_path):
     )
 
 
-def run_risk_check(total_equity):
+def run_risk_check(total_equity, refresh_market_data=False):
     """执行完整风控检查"""
-    snapshot = build_risk_snapshot(total_equity)
+    snapshot = build_risk_snapshot(total_equity, refresh_market_data=refresh_market_data)
     today = snapshot["today"]
     print(f"风控检查 {today}")
     print(f"数据频率: {snapshot['data_freq']}")
@@ -552,6 +585,7 @@ def run_risk_check(total_equity):
     print("加载持仓...")
     print(f"  {snapshot['portfolio_summary']['holding_count']} 只持仓")
     print("获取行情数据...")
+    print(f"  行情模式: {'刷新外部行情' if refresh_market_data else '本地缓存'}")
     print(f"  获取到 {len(snapshot['prices_dict'])} 只股票行情")
     print(f"  市场指数: {snapshot['market']['index_name']}")
     print(f"  {snapshot['market']['index_name']} 波动率: {snapshot['market']['volatility']:.1f}%")
@@ -588,6 +622,8 @@ def main():
     parser = argparse.ArgumentParser(description="风控检查报告")
     parser.add_argument("--equity", type=float, default=None,
                         help="总权益（含现金），不指定则从 portfolio.toml 读取")
+    parser.add_argument("--refresh-market-data", action="store_true",
+                        help="显式连接 baostock/Futu 刷新行情；默认只读取本地补数 cache")
     args = parser.parse_args()
 
     equity = args.equity
@@ -600,7 +636,7 @@ def main():
     if equity is None:
         parser.error("未指定 --equity 且 portfolio.toml 中无 [account].total_equity")
 
-    run_risk_check(equity)
+    run_risk_check(equity, refresh_market_data=args.refresh_market_data)
 
 
 if __name__ == "__main__":

@@ -181,7 +181,7 @@ COSINE_WEIGHT = 0.5                 # 余弦相似度权重
 ./quickstart.sh scan
 ```
 
-读取 `../risk_control/data/portfolio.csv`，为每只持仓生成形态分析报告。
+当前不读取风控模块内部数据；如需扫描持仓，应从 `portfolio.toml` 独立接入，不能依赖 `risk_control/data/portfolio.csv`。
 
 **用途：**
 - 识别持仓中形态走弱的股票（相似案例后续表现差）

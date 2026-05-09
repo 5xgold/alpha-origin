@@ -2,14 +2,14 @@
 # 量化工具集 - 统一入口
 #
 # 用法:
-#   ./quickstart.sh all <PDF路径> [开始日期] [结束日期]   # 全流程
+#   ./quickstart.sh all <PDF路径> [开始日期] [结束日期]   # 归因全流程
 #   ./quickstart.sh parse <PDF路径>                       # 仅解析 PDF
 #   ./quickstart.sh attr [开始日期] [结束日期]             # 仅归因分析
 #   ./quickstart.sh risk [总权益]                          # 仅风控检查
 #   ./quickstart.sh risk-data [日期]                       # 风控补数需求检查
 #   ./quickstart.sh risk-merge [日期]                      # 合并 agent 补数 cache
 #
-# 总权益自动从 asset_summary.json 读取，也可手动指定
+# 总权益默认从 portfolio.toml 读取，也可手动指定
 
 set -e
 
@@ -32,7 +32,7 @@ RC_DIR="$ROOT_DIR/risk_control"
 
 usage() {
     echo "用法:"
-    echo "  ./quickstart.sh all <PDF> [开始日期] [结束日期]"
+    echo "  ./quickstart.sh all <PDF> [开始日期] [结束日期]   # 归因全流程，不运行风控"
     echo "  ./quickstart.sh parse <PDF>"
     echo "  ./quickstart.sh attr [开始日期] [结束日期]"
     echo "  ./quickstart.sh risk-data [日期]             # 风控补数需求检查"
@@ -40,7 +40,6 @@ usage() {
     echo "  ./quickstart.sh risk [总权益]"
     echo "  ./quickstart.sh review [股票代码]          # 交易复盘"
     echo "  ./quickstart.sh earnings <PDF> <股票代码>  # 财报摘要"
-    echo "  ./quickstart.sh sync-portfolio            # 同步 portfolio.toml → CSV"
     echo "  ./quickstart.sh pattern <command> [args]  # 形态检索"
     exit 1
 }
@@ -79,9 +78,7 @@ do_parse() {
         --input "$pdf" \
         --output-dir "$AA_DIR/data"
 
-    # 同步持仓到风控模块
-    cp "$AA_DIR/data/holdings.csv" "$RC_DIR/data/portfolio.csv"
-    info "持仓已同步到 risk_control/data/portfolio.csv"
+    info "PDF 解析完成；归因数据已写入 attribution_analysis/data/"
 }
 
 # ── 策略归因 ──
@@ -131,18 +128,11 @@ do_risk() {
     local equity="$1"
     local equity_args=""
 
-    # 总权益：参数 > asset_summary.json > portfolio.toml（由 Python 自动读取）
+    # 总权益：参数 > portfolio.toml（由 Python 自动读取）
     if [ -n "$equity" ]; then
         equity_args="--equity $equity"
     else
-        local asset_json="$AA_DIR/data/asset_summary.json"
-        if [ -f "$asset_json" ]; then
-            equity=$(python3 -c "import json; print(json.load(open('$asset_json'))['total_assets'])")
-            info "总权益（来自 PDF）: ¥$(printf "%'.0f" "${equity%.*}")"
-            equity_args="--equity $equity"
-        else
-            info "总权益将从 portfolio.toml 读取"
-        fi
+        info "总权益将从 portfolio.toml 读取"
     fi
 
     step "风控补数需求检查"
@@ -175,24 +165,6 @@ do_earnings() {
     step "财报摘要"
     python3 "$ROOT_DIR/llm_digest/scripts/earnings_summary.py" \
         --input "$pdf" --code "$code"
-}
-
-# ── 同步持仓配置 ──
-do_sync_portfolio() {
-    step "同步持仓配置"
-    if [ ! -f "$ROOT_DIR/portfolio.toml" ]; then
-        warn "portfolio.toml 不存在，使用示例文件创建..."
-        if [ -f "$ROOT_DIR/portfolio.toml.example" ]; then
-            cp "$ROOT_DIR/portfolio.toml.example" "$ROOT_DIR/portfolio.toml"
-            warn "已创建 portfolio.toml，请修改为你的实际持仓"
-            exit 0
-        else
-            error "示例文件 portfolio.toml.example 不存在"
-        fi
-    fi
-
-    python3 "$ROOT_DIR/shared/portfolio_config.py"
-    info "持仓配置已同步到 risk_control/data/portfolio.csv"
 }
 
 # ── 形态检索 ──
@@ -234,16 +206,12 @@ case "$CMD" in
     earnings)
         do_earnings "$1" "$2"
         ;;
-    sync-portfolio)
-        do_sync_portfolio
-        ;;
     pattern)
         do_pattern "$@"
         ;;
     all)
         do_parse "$1"
         do_attr "${2:-2026-01-01}" "${3:-2026-03-31}"
-        do_risk
         ;;
     *)
         usage

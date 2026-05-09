@@ -27,8 +27,10 @@ PRICES_DIR = AGENT_CACHE_DIR / "prices"
 INDICES_DIR = AGENT_CACHE_DIR / "indices"
 MERGE_REPORT_DIR = AGENT_CACHE_DIR / "merge_reports"
 
-PRICE_FIELDS = ["date", "open", "high", "low", "close", "volume"]
+PRICE_REQUIRED_FIELDS = ["date", "open", "high", "low", "close", "volume"]
+PRICE_FIELDS = PRICE_REQUIRED_FIELDS + ["adjust"]
 INDEX_FIELDS = ["date", "close"]
+DEFAULT_PRICE_ADJUST = "qfq"
 
 
 def normalize_review_date(date_str=None):
@@ -51,6 +53,17 @@ def _series_path(section, code):
 
 def _empty_frame(fields):
     return pd.DataFrame(columns=fields)
+
+
+def _normalize_adjust(value):
+    text = str(value or DEFAULT_PRICE_ADJUST).strip().lower()
+    if text in ("", "none", "raw", "no_adjust", "unadjusted", "3"):
+        return "raw"
+    if text in ("qfq", "forward", "forward_adjusted", "2"):
+        return "qfq"
+    if text in ("hfq", "backward", "backward_adjusted", "1"):
+        return "hfq"
+    return text
 
 
 def _read_series(section, code):
@@ -77,9 +90,10 @@ def _write_series(section, code, df):
 
 
 def _normalize_frame(df, section, strict=True):
-    required = PRICE_FIELDS if section == "prices" else INDEX_FIELDS
+    required = PRICE_REQUIRED_FIELDS if section == "prices" else INDEX_FIELDS
+    output_fields = PRICE_FIELDS if section == "prices" else INDEX_FIELDS
     if df is None or df.empty:
-        return _empty_frame(required)
+        return _empty_frame(output_fields)
     missing = [field for field in required if field not in df.columns]
     if missing and strict:
         raise ValueError(f"{section} 缺少字段: {', '.join(missing)}")
@@ -87,6 +101,10 @@ def _normalize_frame(df, section, strict=True):
     for field in required:
         if field not in local.columns:
             local[field] = 0 if field == "volume" else pd.NA
+    if section == "prices":
+        if "adjust" not in local.columns:
+            local["adjust"] = DEFAULT_PRICE_ADJUST
+        local["adjust"] = local["adjust"].map(_normalize_adjust)
     local["date"] = pd.to_datetime(local["date"], errors="coerce")
     numeric_fields = [field for field in required if field != "date"]
     for field in numeric_fields:
@@ -95,15 +113,19 @@ def _normalize_frame(df, section, strict=True):
     if section == "prices":
         local = local.dropna(subset=["open", "high", "low"])
         local["volume"] = local["volume"].fillna(0)
-    local = local[required].drop_duplicates(subset=["date"], keep="last")
+        local = local[output_fields].drop_duplicates(subset=["date", "adjust"], keep="last")
+    else:
+        local = local[output_fields].drop_duplicates(subset=["date"], keep="last")
     return local.sort_values("date").reset_index(drop=True)
 
 
-def read_cached_series(section, code, start_date=None, end_date=None):
+def read_cached_series(section, code, start_date=None, end_date=None, adjust=DEFAULT_PRICE_ADJUST):
     df = _read_series(section, code)
     if df.empty:
         return df
     local = df.sort_values("date").reset_index(drop=True)
+    if section == "prices" and adjust is not None:
+        local = local[local["adjust"] == _normalize_adjust(adjust)]
     if start_date is not None:
         local = local[local["date"] >= pd.to_datetime(start_date)]
     if end_date is not None:

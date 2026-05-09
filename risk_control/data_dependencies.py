@@ -17,6 +17,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from risk_control.config import ATR_PERIOD, MARKET_INDEX, PORTFOLIO_LOOKBACK_DAYS
 from risk_control.agent_price_cache import read_cached_series as read_agent_price_series
 from shared.config import CACHE_DIR, parse_benchmark_config
+from shared.data_provider import latest_baostock_available_date
 from shared.portfolio_config import load_portfolio_from_toml
 
 
@@ -24,7 +25,6 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_PORTFOLIO_TOML = ROOT_DIR / "portfolio.toml"
 OUTPUT_DIR = ROOT_DIR / "output"
 AGENT_PRICE_CACHE_DIR = Path(CACHE_DIR) / "agent_prices"
-NEODATA_CACHE_DIR = Path(CACHE_DIR) / "neodata"
 
 HOLDING_LOOKBACK_TRADING_DAYS = max(PORTFOLIO_LOOKBACK_DAYS, 60)
 HOLDING_LOOKBACK_CALENDAR_DAYS = 120
@@ -34,7 +34,7 @@ INDEX_LOOKBACK_CALENDAR_DAYS = 60
 
 def normalize_review_date(date_str=None):
     if not date_str:
-        return datetime.now().strftime("%Y%m%d")
+        return latest_baostock_available_date()
     digits = str(date_str).replace("-", "").strip()
     if len(digits) != 8 or not digits.isdigit():
         raise ValueError("日期格式必须为 YYYYMMDD 或 YYYY-MM-DD")
@@ -118,24 +118,6 @@ def _agent_series(code, review_date, series_key):
     return df.reset_index(drop=True), sources
 
 
-def _neodata_series(code):
-    frames = []
-    for market in ("a", "etf", "index"):
-        path = NEODATA_CACHE_DIR / f"{code}_{market}.csv"
-        if not path.exists():
-            continue
-        try:
-            df = pd.read_csv(path, parse_dates=["date"])
-        except Exception:
-            continue
-        frames.append(df)
-    if not frames:
-        return _empty_prices_frame(), []
-    df = pd.concat(frames, ignore_index=True)
-    df = df.dropna(subset=["date"]).sort_values("date").drop_duplicates(subset=["date"])
-    return df.reset_index(drop=True), [str(NEODATA_CACHE_DIR)]
-
-
 def _stocks_cache_series(code):
     frames = []
     stocks_dir = Path(CACHE_DIR) / "stocks"
@@ -195,10 +177,6 @@ def _combined_series(code, review_date, series_key):
         frames.append(agent_df)
         sources.extend(agent_sources)
     if series_key == "prices":
-        neo_df, neo_sources = _neodata_series(code)
-        if not neo_df.empty:
-            frames.append(neo_df)
-            sources.extend(neo_sources)
         stock_df, stock_sources = _stocks_cache_series(code)
         if not stock_df.empty:
             frames.append(stock_df)
@@ -215,7 +193,15 @@ def _combined_series(code, review_date, series_key):
     return df.reset_index(drop=True), sorted(set(sources))
 
 
-def _coverage_status(df, review_date, min_rows, required_fields, start_date=None, exact_date=None):
+def _coverage_status(
+    df,
+    review_date,
+    min_rows,
+    required_fields,
+    start_date=None,
+    exact_date=None,
+    allow_stale_calendar_days=0,
+):
     ed = pd.to_datetime(review_date)
     local = df.copy()
     if local.empty:
@@ -225,6 +211,9 @@ def _coverage_status(df, review_date, min_rows, required_fields, start_date=None
             "latest_date": "",
             "missing_fields": required_fields,
             "reason": "no_cache",
+            "data_status": "missing",
+            "as_of_date": "",
+            "stale_days": None,
         }
     local = local[local["date"] <= ed]
     if start_date is not None:
@@ -235,19 +224,33 @@ def _coverage_status(df, review_date, min_rows, required_fields, start_date=None
     latest_date = "" if local.empty else local["date"].max().strftime("%Y-%m-%d")
     ready = not missing_fields and len(local) >= min_rows
     reason = ""
+    data_status = "fresh"
+    stale_days = None
     if missing_fields:
         reason = "missing_fields"
+        data_status = "invalid"
     elif len(local) < min_rows:
         reason = "insufficient_rows"
+        data_status = "insufficient"
     elif latest_date and latest_date.replace("-", "") < review_date and exact_date is None:
-        reason = "stale_latest_date"
-        ready = False
+        latest_ts = pd.to_datetime(latest_date)
+        stale_days = int((ed - latest_ts).days)
+        if allow_stale_calendar_days and latest_ts >= ed - timedelta(days=allow_stale_calendar_days):
+            reason = "stale_latest_date_accepted"
+            data_status = "possibly_suspended"
+        else:
+            reason = "stale_latest_date"
+            data_status = "stale"
+            ready = False
     return {
         "ready": bool(ready),
         "available_rows": int(len(local)),
         "latest_date": latest_date,
         "missing_fields": missing_fields,
         "reason": reason,
+        "data_status": data_status,
+        "as_of_date": latest_date,
+        "stale_days": stale_days,
     }
 
 
@@ -263,9 +266,11 @@ def _holding_requirement(row, review_date):
         HOLDING_LOOKBACK_TRADING_DAYS,
         ["date", "open", "high", "low", "close", "volume"],
         start_date=start,
+        allow_stale_calendar_days=10,
     )
     requirements = [{
         "series": "ohlcv_daily",
+        "adjust": "qfq",
         "start_date": start,
         "end_date": _fmt_date(review_date),
         "lookback_trading_days": HOLDING_LOOKBACK_TRADING_DAYS,
@@ -378,6 +383,8 @@ def build_data_requirements(review_date=None, portfolio_path=None):
             "将结果先写入 agent_incoming_path，JSON 字段为 prices 与 indices。",
             "写入后运行 ./quickstart.sh risk-merge 合并到长期增量 CSV cache。",
             "prices 每个 code 需要 date/open/high/low/close/volume，indices 每个 code 至少需要 date/close。",
+            "prices 行情统一使用前复权 qfq；写入 agent cache 时每行带 adjust=qfq，旧数据缺 adjust 时按 qfq 兼容。",
+            "停牌或无成交标的可使用最近有效交易日行情；此时 status.data_status=possibly_suspended，as_of_date 标明实际行情日期。",
         ],
     }
     return payload

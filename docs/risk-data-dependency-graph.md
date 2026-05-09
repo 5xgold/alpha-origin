@@ -4,6 +4,14 @@
 
 ## 总览
 
+风控标准流程：
+
+1. 检查风控策略依赖的数据范围：`risk_control/data_dependencies.py` 根据当前策略、持仓和市场指数生成需求。
+2. 数据获取：agent 只获取行情事实，按 requirements 写入 incoming。
+3. 数据合并：`risk_control/agent_price_cache.py` 合并、去重、校验并写入长期 cache。
+4. 跑风控策略：`risk_control/scripts/risk_report.py` 默认只读取本地 cache 执行策略。
+5. 输出结论模板：导出 `risk_snapshot` 和 `risk_report`，外部 prompt 再组织每日复盘正文。
+
 ```mermaid
 flowchart TD
     A[portfolio.toml] --> B[持仓静态事实]

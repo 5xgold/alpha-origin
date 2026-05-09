@@ -16,17 +16,16 @@ pip install -r requirements.txt
 cp portfolio.toml.example portfolio.toml  # 复制示例文件
 vim portfolio.toml                         # 编辑为你的实际持仓
 vim .env                                   # 配置 API 密钥（可选）
-./quickstart.sh sync-portfolio             # 同步持仓到 CSV
 
-# 3. 一键全流程（PDF → 归因 → 风控）
+# 3. 归因和风控独立运行
 ./quickstart.sh all data/raw/对账单.pdf 2026-01-01 2026-03-31
 
 # 或分阶段调用
 ./quickstart.sh parse data/raw/对账单.pdf          # 仅解析 PDF → CSV + 资产信息
 ./quickstart.sh attr 2026-01-01 2026-03-31          # 仅归因分析
-./quickstart.sh risk-data                            # 风控补数需求检查（先给 AI/agent 补数）
-./quickstart.sh risk-merge                           # 合并 agent 补数到长期 cache
-./quickstart.sh risk                                 # 仅风控（总权益自动从 PDF 读取）
+./quickstart.sh risk-data                            # 检查风控策略依赖的数据范围和本地缺口
+./quickstart.sh risk-merge                           # 合并补数到长期 cache
+./quickstart.sh risk                                 # 仅风控（总权益从 portfolio.toml 读取）
 ./quickstart.sh risk 500000                          # 手动指定总权益
 ./quickstart.sh review 601216                        # 交易复盘（指定股票）
 ./quickstart.sh earnings <PDF> 601216                # 财报摘要
@@ -37,8 +36,11 @@ vim .env                                   # 配置 API 密钥（可选）
 **配置文件说明：** 详见 [docs/configuration-guide.md](docs/configuration-guide.md)
 
 `portfolio.toml` 现在承载风控信号输入：
+- `[account].total_equity` 总权益，用于仓位、权益风险预算止损
 - `[[holdings]]` 当前持仓，用于风控和持仓复盘
 - `[[watchlist]]` 待买入观察列表，用于 agent/prompt 侧扩展
+
+归因模块和风控模块架构独立：归因读取 `attribution_analysis/data/` 的交易、资金流和持仓快照；风控只读取 `portfolio.toml` 和本地行情 cache。两者只共享 `shared/` 中的历史行情等公共取数逻辑，不互相读取中间结果。
 
 同时支持两类可扩展规则：
 - `[[holdings]].risk_rules`：覆盖默认止损/止盈/移动止损参数
@@ -234,11 +236,19 @@ trade_plan = {status = "active", stop_loss_strategy = "equity_risk_budget", plan
 
 ### 风控补数入口
 
-项目内只保留风控信号。每日复盘正文由外部 prompt 模板生成；进入风控前，AI/agent 先读取本地数据需求并补齐 cache：
+项目内只保留风控信号。风控账户、持仓和策略配置只读取 `portfolio.toml`；不读取 `attribution_analysis/data/asset_summary.json`、PDF 解析持仓快照等中间结果。每日复盘正文由外部 prompt 模板生成；进入风控前，先读取本地数据需求并补齐 cache：
+
+风控标准流程：
+
+1. 检查风控策略依赖的数据范围：运行 `risk-data` 生成/校验补数需求。
+2. 数据获取：按 requirements 用 baostock/Futu 等行情源只补缺口数据，不重复刷新已有历史。
+3. 数据合并：运行 `risk-merge` 合并补数到长期 cache。
+4. 跑风控策略：运行 `risk`，默认只读取本地 cache。
+5. 输出结论模板：代码输出结构化快照和信号结论，每日复盘正文由外部 prompt 模板组织。
 
 ```bash
 ./quickstart.sh risk-data
-# agent 写入 data/cache/agent_prices/incoming/YYYYMMDD.json
+# 补缺口数据，写入 data/cache/agent_prices/incoming/YYYYMMDD.json
 ./quickstart.sh risk-merge
 ./quickstart.sh risk
 ```
@@ -255,7 +265,8 @@ trade_plan = {status = "active", stop_loss_strategy = "equity_risk_budget", plan
 
 | 市场 | 数据源 | 备注 |
 |------|--------|------|
-| 风控补数 | `data/cache/agent_prices/prices/{code}.csv` / `indices/{code}.csv` | agent/AI 先写 incoming，再由 `risk-merge` 合并 |
+| 风控配置 | `portfolio.toml` | 总权益、当前持仓、持仓级风控策略的唯一来源 |
+| 风控补数 | `data/cache/agent_prices/prices/{code}.csv` / `indices/{code}.csv` | 补缺口数据先写 incoming，再由 `risk-merge` 合并 |
 | A股行情 | baostock | 默认前复权 |
 | 港股行情 | FutuOpenD → 东方财富 | 多源 fallback，默认前复权 |
 | 指数/行业 | baostock + 东方财富 | 成分股 & 申万行业指数 |
@@ -271,8 +282,7 @@ PythonProjects/
 │   ├── trades.csv                  # 交易记录（从PDF解析）
 │   ├── holdings.csv                # 持仓快照
 │   └── asset_summary.json          # 账户资产摘要
-├── risk_control/data/              # 风控专属数据
-│   └── portfolio.csv               # 当前持仓（从portfolio.toml同步）
+├── risk_control/data/              # 风控专属运行数据（不存持仓源）
 ├── llm_digest/data/                # LLM专属数据
 │   └── earnings/                   # 财报PDF
 └── output/                         # 统一报告输出目录
@@ -291,7 +301,7 @@ PythonProjects/
 ├── .env                            # 数据源配置（TS_TOKEN/FUTU_HOST/FUTU_PORT）
 ├── .venv/                          # 共享虚拟环境
 ├── requirements.txt                # 全局依赖
-├── quickstart.sh                   # 一键运行：PDF → 归因 → 风控
+├── quickstart.sh                   # 一键运行入口；风控独立读取 portfolio.toml
 ├── shared/                         # 公共模块
 │   ├── config.py                   # 公共配置（数据源/缓存/外部服务）
 │   ├── data_provider.py            # 多数据源行情（baostock/futu/yfinance/eastmoney）
@@ -324,7 +334,7 @@ PythonProjects/
 │   ├── config.py                   # 风控专属参数
 │   ├── quickstart.sh
 │   └── data/
-│       └── portfolio.csv           # 当前持仓
+│       └── data/                   # 风控运行数据
 ├── llm_digest/                     # 模块3：LLM 信息压缩 ✅
 │   ├── config.py                   # LLM 配置 + prompt 参数
 │   ├── llm_client.py               # OpenAI 兼容 API 封装

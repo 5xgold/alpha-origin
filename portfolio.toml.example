@@ -31,8 +31,9 @@ update_time = "2026-01-01 09:00" # (可选) 更新时间，仅供记录
 # 使用方法：
 # 1. 运行 ./scripts/init_project.sh 自动生成配置文件
 # 2. 或手动复制本文件为 portfolio.toml，修改为你的实际持仓
-# 3. 运行 ./quickstart.sh risk 即可执行风控检查
-# 4. 运行 ./quickstart.sh daily-review 即可生成 AI 可消费的每日复盘输入包
+# 3. 运行 ./quickstart.sh risk-data 检查风控补数需求
+# 4. agent 写入 data/cache/agent_prices/incoming/YYYYMMDD.json 后运行 ./quickstart.sh risk-merge
+# 5. 运行 ./quickstart.sh risk 执行风控检查
 
 [[holdings]]
 code = "600519"

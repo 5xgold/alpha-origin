@@ -2,24 +2,21 @@
 
 ## Unreleased
 
-### fix(data-provider): baostock 超时保护，防止每日复盘 SIGTERM
+### refactor(risk-control): 风控运行前生成补数需求
+
+- 新增 `risk_control/data_dependencies.py`，输出风控所需持仓 OHLCV、市场指数 close、入场保护 low 的补数清单
+- 新增 `./quickstart.sh risk-data`，供 AI/agent 在跑风控前检查本地 cache 缺口
+- 新增 `./quickstart.sh risk-merge`，将 agent incoming JSON 合并为按标的维护的长期增量 CSV cache，日期倒序保存
+- `./quickstart.sh risk` 增加 strict 数据检查，关键行情缺失时先停止并输出 requirements JSON
+- 清理项目内每日复盘生成器与图表入口，每日复盘正文改由外部 prompt 模板生成，项目内只保留风控信号
+
+### fix(data-provider): baostock 超时保护，防止风控链路 SIGTERM
 
 - `_ensure_bs_login()` 设置 socket 超时（默认 30s，可通过 `BS_TIMEOUT` 环境变量配置）
 - 首次 login 失败后标记 `_bs_unavailable`，后续调用立即跳过，不再重复超时等待
 - `_fetch_a_stock_prices` / `get_benchmark_prices` / `get_stock_sector` / `get_index_constituents` 均增加 `_run_with_timeout` 二级保护
 - 新增 `_fetch_neodata_index_kline`：NeoData 指数历史 K 线，作为 baostock 之前的数据源
 - 新增数据降级追踪：`get_data_degradations()` / `clear_data_degradations()`
-- 每日复盘报告/prompt 顶部展示降级提示，标明哪些数据使用了缓存替代
-- baostock 不可用时自动回退到 NeoData → 本地缓存，每日复盘可正常完成
-
-### feat(daily-review): 恢复 AI 友好的每日复盘入口
-
-- 新增 `scripts/daily_review.py`，输出 `report.md + prompt.md + json`
-- `quickstart.sh daily-review` 改为调用新的根目录脚本
-- `portfolio.toml` 支持 `[[watchlist]]` 观察列表，可检查基础买点触发
-- 新增 `docs/claw-daily-review.md`，明确“项目能力 + claw 薄封装”的接入方式
-- 新增 `watchlist_signals/` 观察列表插件框架，内置 `target_buy` / `breakout_buy`
-- `[[holdings]]` 支持 `risk_rules`，可覆盖默认止损/移动止损/止盈参数
 
 ## v0.8.0 - 2026-04-30
 

@@ -24,10 +24,10 @@ vim .env                                   # 配置 API 密钥（可选）
 # 或分阶段调用
 ./quickstart.sh parse data/raw/对账单.pdf          # 仅解析 PDF → CSV + 资产信息
 ./quickstart.sh attr 2026-01-01 2026-03-31          # 仅归因分析
+./quickstart.sh risk-data                            # 风控补数需求检查（先给 AI/agent 补数）
+./quickstart.sh risk-merge                           # 合并 agent 补数到长期 cache
 ./quickstart.sh risk                                 # 仅风控（总权益自动从 PDF 读取）
 ./quickstart.sh risk 500000                          # 手动指定总权益
-./quickstart.sh daily-review                         # 生成每日复盘 report/prompt/json
-./quickstart.sh daily-pack                           # 每日复盘 + 图表
 ./quickstart.sh review 601216                        # 交易复盘（指定股票）
 ./quickstart.sh earnings <PDF> 601216                # 财报摘要
 ./quickstart.sh pattern build 600519,000001          # 构建形态样本库
@@ -36,9 +36,9 @@ vim .env                                   # 配置 API 密钥（可选）
 
 **配置文件说明：** 详见 [docs/configuration-guide.md](docs/configuration-guide.md)
 
-`portfolio.toml` 现在同时承载两类 AI 复盘输入：
+`portfolio.toml` 现在承载风控信号输入：
 - `[[holdings]]` 当前持仓，用于风控和持仓复盘
-- `[[watchlist]]` 待买入观察列表，用于每日复盘里的买点提醒
+- `[[watchlist]]` 待买入观察列表，用于 agent/prompt 侧扩展
 
 同时支持两类可扩展规则：
 - `[[holdings]].risk_rules`：覆盖默认止损/止盈/移动止损参数
@@ -225,31 +225,37 @@ trade_plan = {status = "active", stop_loss_strategy = "equity_risk_budget", plan
 
 | 优先级 | 方向 | 目标 | 时间 |
 |--------|------|------|------|
-| P1 | 每日复盘助手 | 券商 API 驱动，告别手动导 PDF | 4-5月 |
+| P1 | 风控数据补数 | agent 先补齐行情依赖，再跑本地风控信号 | 4-5月 |
 | P2 | 自动调度 + 微信推送 | 腾讯云 qclaw 定时触发，推送风控/复盘结果 | 5-6月 |
 | P3 | 持仓信息摘要 | 多源聚合 → LLM 压缩 → 结构化持仓情报 | 4-7月（持续） |
 | P4 | 持仓重要事件提醒 | 财报/分红/增减持等关键事件提前提醒 | 6-7月 |
 
 详见 [docs/roadmap-phase2.md](docs/roadmap-phase2.md)
 
-### AI 友好入口
+### 风控补数入口
 
-每日复盘建议优先做成“项目内稳定能力”，再由 `claw`/agent 做薄封装调用：
+项目内只保留风控信号。每日复盘正文由外部 prompt 模板生成；进入风控前，AI/agent 先读取本地数据需求并补齐 cache：
 
 ```bash
-./quickstart.sh daily-review
+./quickstart.sh risk-data
+# agent 写入 data/cache/agent_prices/incoming/YYYYMMDD.json
+./quickstart.sh risk-merge
+./quickstart.sh risk
 ```
 
 会输出到 `output/`：
-- `daily_review_YYYYMMDD.json`：结构化上下文，适合 agent 直接读取
-- `daily_review_YYYYMMDD_prompt.md`：可直接喂给 `claw` 的复盘提示词
-- `daily_review_YYYYMMDD_report.md`：本地规则生成的基础复盘稿
-- `risk_snapshot_YYYYMMDD_daily_review.json`：图表和二次分析复用的风控快照
+- `risk_data_requirements_YYYYMMDD.json`：风控运行前的补数清单、缺口状态、agent cache 写入路径
+- `risk_price_merge_YYYYMMDD.json`：agent 补数合并报告
+
+`risk-merge` 会把 incoming JSON 合并到长期增量 cache：`data/cache/agent_prices/prices/{code}.csv` 和 `data/cache/agent_prices/indices/{code}.csv`。CSV 按日期倒序保存，打开文件时最新数据在最上面。
+
+`./quickstart.sh risk` 会先 strict 检查补数状态；关键行情缺失时会停止，并提示先按 requirements 让 agent 补数据。
 
 ## 数据源
 
 | 市场 | 数据源 | 备注 |
 |------|--------|------|
+| 风控补数 | `data/cache/agent_prices/prices/{code}.csv` / `indices/{code}.csv` | agent/AI 先写 incoming，再由 `risk-merge` 合并 |
 | A股行情 | baostock | 默认前复权 |
 | 港股行情 | FutuOpenD → 东方财富 | 多源 fallback，默认前复权 |
 | 指数/行业 | baostock + 东方财富 | 成分股 & 申万行业指数 |

@@ -6,6 +6,8 @@
 #   ./quickstart.sh parse <PDF路径>                       # 仅解析 PDF
 #   ./quickstart.sh attr [开始日期] [结束日期]             # 仅归因分析
 #   ./quickstart.sh risk [总权益]                          # 仅风控检查
+#   ./quickstart.sh risk-data [日期]                       # 风控补数需求检查
+#   ./quickstart.sh risk-merge [日期]                      # 合并 agent 补数 cache
 #
 # 总权益自动从 asset_summary.json 读取，也可手动指定
 
@@ -33,10 +35,10 @@ usage() {
     echo "  ./quickstart.sh all <PDF> [开始日期] [结束日期]"
     echo "  ./quickstart.sh parse <PDF>"
     echo "  ./quickstart.sh attr [开始日期] [结束日期]"
+    echo "  ./quickstart.sh risk-data [日期]             # 风控补数需求检查"
+    echo "  ./quickstart.sh risk-merge [日期]            # 合并 agent 补数 cache"
     echo "  ./quickstart.sh risk [总权益]"
     echo "  ./quickstart.sh review [股票代码]          # 交易复盘"
-    echo "  ./quickstart.sh daily-review [总权益] [日期]  # 每日复盘"
-    echo "  ./quickstart.sh daily-pack [总权益] [日期]    # 每日复盘 + 图表"
     echo "  ./quickstart.sh earnings <PDF> <股票代码>  # 财报摘要"
     echo "  ./quickstart.sh sync-portfolio            # 同步 portfolio.toml → CSV"
     echo "  ./quickstart.sh pattern <command> [args]  # 形态检索"
@@ -106,6 +108,24 @@ do_attr() {
     info "归因报告: output/report.md"
 }
 
+# ── 风控数据需求检查 ──
+do_risk_data() {
+    local date="$1"
+    local args=""
+    [ -n "$date" ] && args="--date $date"
+    step "风控补数需求检查"
+    python3 "$RC_DIR/data_dependencies.py" $args
+}
+
+# ── 风控补数合并 ──
+do_risk_merge() {
+    local date="$1"
+    local args=""
+    [ -n "$date" ] && args="--date $date"
+    step "风控补数合并"
+    python3 "$RC_DIR/agent_price_cache.py" $args --strict
+}
+
 # ── 风控检查 ──
 do_risk() {
     local equity="$1"
@@ -125,6 +145,9 @@ do_risk() {
         fi
     fi
 
+    step "风控补数需求检查"
+    python3 "$RC_DIR/data_dependencies.py" --strict
+
     step "风控检查"
     python3 "$RC_DIR/scripts/risk_report.py" \
         $equity_args
@@ -139,28 +162,6 @@ do_review() {
     local args=""
     [ -n "$code" ] && args="--code $code"
     python3 "$ROOT_DIR/llm_digest/scripts/trade_review.py" $args
-}
-
-# ── 每日复盘 ──
-do_daily_review() {
-    local equity="$1"
-    local date="$2"
-    step "每日复盘"
-    local args=""
-    [ -n "$equity" ] && args="--equity $equity"
-    [ -n "$date" ] && args="$args --date $date"
-    python3 "$ROOT_DIR/scripts/daily_review.py" $args
-}
-
-# ── 每日复盘打包 ──
-do_daily_pack() {
-    local equity="$1"
-    local date="$2"
-    do_daily_review "$equity" "$date"
-    step "复盘图表"
-    local chart_args=""
-    [ -n "$date" ] && chart_args="--date $date"
-    python3 "$ROOT_DIR/scripts/gen_review_charts.py" $chart_args
 }
 
 # ── 财报摘要 ──
@@ -221,14 +222,14 @@ case "$CMD" in
     risk)
         do_risk "$1"
         ;;
+    risk-data)
+        do_risk_data "$1"
+        ;;
+    risk-merge)
+        do_risk_merge "$1"
+        ;;
     review)
         do_review "$1"
-        ;;
-    daily-review)
-        do_daily_review "$1" "$2"
-        ;;
-    daily-pack)
-        do_daily_pack "$1" "$2"
         ;;
     earnings)
         do_earnings "$1" "$2"

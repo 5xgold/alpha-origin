@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 import pandas as pd
 import baostock as bs
 import requests
+from risk_control.agent_price_cache import read_cached_series as read_agent_price_series
 
 
 # ============================================================
@@ -613,6 +614,85 @@ def _classify_etf(name):
 
 _EMPTY_PRICE_DF = pd.DataFrame(columns=['date', 'open', 'high', 'low', 'close', 'volume'])
 
+
+def _agent_price_cache_dir() -> Path:
+    path = Path(CACHE_DIR) / "agent_prices"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _normalize_agent_price_rows(rows, require_ohlcv=True):
+    if not rows:
+        return _EMPTY_PRICE_DF.copy()
+    df = pd.DataFrame(rows)
+    if "date" not in df.columns or "close" not in df.columns:
+        return _EMPTY_PRICE_DF.copy()
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    if require_ohlcv:
+        for col in ["open", "high", "low"]:
+            if col not in df.columns:
+                df[col] = df["close"]
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        if "volume" not in df.columns:
+            df["volume"] = 0
+        df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0)
+    else:
+        for col in ["open", "high", "low"]:
+            if col not in df.columns:
+                df[col] = df["close"]
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(df["close"])
+        if "volume" not in df.columns:
+            df["volume"] = 0
+        df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0)
+    df = df.dropna(subset=["date", "close"]).sort_values("date")
+    cols = ["date", "open", "high", "low", "close", "volume"]
+    return df[cols].drop_duplicates(subset=["date"]).reset_index(drop=True)
+
+
+def _load_agent_cached_series(code, start_date, end_date, section="prices", require_ohlcv=True):
+    cached = read_agent_price_series(section, code, start_date, end_date)
+    if cached is not None and not cached.empty:
+        return _normalize_agent_price_rows(cached.to_dict(orient="records"), require_ohlcv=require_ohlcv)
+
+    cache_dir = _agent_price_cache_dir()
+    frames = []
+    code_str = str(code).strip()
+    for path in sorted(cache_dir.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        rows = payload.get(section, {}).get(code_str, [])
+        if not rows and not code_str.startswith("0"):
+            rows = payload.get(section, {}).get(code_str.zfill(6), [])
+        if rows:
+            df = _normalize_agent_price_rows(rows, require_ohlcv=require_ohlcv)
+            if not df.empty:
+                frames.append(df)
+    if not frames:
+        return _EMPTY_PRICE_DF.copy()
+    merged = pd.concat(frames, ignore_index=True)
+    merged = merged.drop_duplicates(subset=["date"]).sort_values("date").reset_index(drop=True)
+    sd = pd.to_datetime(start_date)
+    ed = pd.to_datetime(end_date)
+    sliced = merged[(merged["date"] >= sd) & (merged["date"] <= ed)].reset_index(drop=True)
+    return sliced
+
+
+def _agent_cache_covers_request(df, start_date, end_date, min_coverage=1.0):
+    if df is None or df.empty:
+        return False
+    start_ts = pd.to_datetime(start_date)
+    end_ts = pd.to_datetime(end_date)
+    latest = df["date"].max()
+    if latest < end_ts:
+        return False
+    expected_days = max(len(pd.bdate_range(start=start_ts, end=end_ts)), 1)
+    return len(df) >= max(1, int(expected_days * min_coverage))
+
+
 # 数据源注册表：market → [(name, fetcher_fn), ...]
 # 按优先级排列，第一个成功即返回
 _SOURCE_REGISTRY = {
@@ -670,6 +750,10 @@ def get_stock_prices(code, start_date, end_date, adjust="qfq"):
     is_hk = _is_hk(code_str)
     if not is_hk:
         code_str = code_str.zfill(6)
+
+    agent_df = _load_agent_cached_series(code_str, start_date, end_date, section="prices", require_ohlcv=True)
+    if _agent_cache_covers_request(agent_df, start_date, end_date, min_coverage=1.0):
+        return agent_df
 
     # 缓存文件名包含复权方式，存放在 stocks/ 子目录
     adjust_suffix = adjust if adjust else "raw"
@@ -864,6 +948,10 @@ def get_benchmark_prices(benchmark_index, start_date, end_date):
 
     返回 DataFrame[date, open, close, high, low, volume]
     """
+    agent_df = _load_agent_cached_series(str(benchmark_index), start_date, end_date, section="indices", require_ohlcv=False)
+    if _agent_cache_covers_request(agent_df, start_date, end_date, min_coverage=0.7):
+        return agent_df
+
     series_df = _seed_benchmark_series_from_legacy_cache(benchmark_index)
     sliced = _slice_benchmark_series(series_df, start_date, end_date)
     start_ts = pd.to_datetime(start_date)

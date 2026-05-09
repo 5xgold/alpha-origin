@@ -215,6 +215,6 @@ def check(portfolio_df, prices_dict, *, state, **kwargs):
 
 ### 未来方向
 
-- **观察列表**：买入信号策略 + 每日复盘集成
+- **观察列表**：买入信号策略 + 外部 prompt 集成
 - **自动多空判断**：基于均线/市场宽度自动切换 CURRENT_MARKET_REGIME
 - **回测框架**：信号历史回测，验证策略有效性

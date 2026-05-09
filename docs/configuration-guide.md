@@ -74,7 +74,7 @@ notes = "回调或突破后再看"
   - `status`: 计划状态，默认 `active`
   - `stop_loss_strategy`: 当前确认采用的止损策略，风控模块优先读取这一层
     - 支持 `atr` / `entry_day_low_guard` / `equity_risk_budget`
-  - `plan_note`: 人类可读备注，方便每日复盘展示
+  - `plan_note`: 人类可读备注，方便风控报告或外部 prompt 展示
 - `risk_rules`: 可选，自定义风控覆盖参数，推荐使用内联 table，例如 `risk_rules = {...}`
   - `stop_loss_strategy = "atr" | "entry_day_low_guard" | "equity_risk_budget"`：兼容旧写法；如果 `trade_plan.stop_loss_strategy` 存在，则以后者为准
   - `stop_loss_atr_multiplier`
@@ -90,7 +90,7 @@ notes = "回调或突破后再看"
 - `target_buy_price`: 回调到该价格及以下时提示关注买点
 - `breakout_price`: 向上突破该价格时提示关注买点
 - `signal_rules`: 预留给观察列表插件的自定义参数
-- `notes`: 观察逻辑备注，供每日复盘和 agent 使用
+- `notes`: 观察逻辑备注，供 agent/prompt 使用
 
 ## 初始化配置
 

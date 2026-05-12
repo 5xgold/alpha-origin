@@ -134,6 +134,10 @@ def _stocks_cache_series(code):
     ]
     if code_str.isdigit() and len(code_str) < 6:
         patterns.append(f"{code_str.zfill(6)}_*_*_*.csv")
+    # 港股 HK 前缀：HK2498 → 也搜索 02498
+    if code_str.upper().startswith("HK"):
+        hk_num = code_str[2:].zfill(5)
+        patterns.append(f"{hk_num}_*_*_*.csv")
     sources = []
     for pattern in patterns:
         for path in stocks_dir.glob(pattern):
@@ -177,10 +181,15 @@ def _benchmark_cache_series(code):
 def _combined_series(code, review_date, series_key):
     frames = []
     sources = []
-    agent_df, agent_sources = _agent_series(code, review_date, series_key)
-    if not agent_df.empty:
-        frames.append(agent_df)
-        sources.extend(agent_sources)
+    # 港股 HK 前缀：同时用原始 code 和标准化 code 查找
+    codes_to_try = [code]
+    if str(code).upper().startswith("HK"):
+        codes_to_try.append(str(code)[2:].zfill(5))
+    for c in codes_to_try:
+        agent_df, agent_sources = _agent_series(c, review_date, series_key)
+        if not agent_df.empty:
+            frames.append(agent_df)
+            sources.extend(agent_sources)
     if series_key == "prices":
         stock_df, stock_sources = _stocks_cache_series(code)
         if not stock_df.empty:

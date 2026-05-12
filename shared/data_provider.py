@@ -38,6 +38,9 @@ _bs_unavailable = False  # 标记 baostock 不可用，避免重复超时
 # baostock 调用超时（秒）— 影响 connect + recv
 _BS_TIMEOUT = int(os.getenv("BS_TIMEOUT", "30"))
 _BS_LOGIN_RETRIES = int(os.getenv("BS_LOGIN_RETRIES", "3"))
+# baostock 请求间隔（秒）— 避免高频请求导致连接断开
+_BS_REQUEST_INTERVAL = float(os.getenv("BS_REQUEST_INTERVAL", "0.5"))
+_bs_last_request_time = 0.0
 
 # ============================================================
 # 数据降级追踪
@@ -76,16 +79,19 @@ def local_market_data_only():
 
 
 def latest_baostock_available_date(now=None) -> str:
-    """返回 baostock 默认已入库的最近 A 股交易日（YYYYMMDD）。
+    """返回 baostock 可查询的最近 A 股交易日（YYYYMMDD）。
 
-    baostock 当日行情通常 17:30 后入库；周末默认回退到上一个工作日。
-    这里不内置节假日日历，遇到节假日时 baostock 查询会自然返回最近可用历史数据。
+    A 股 15:00 收盘，baostock 通常 16:30 前后入库当日数据。
+    工作日 16:30 后用当天日期；之前用上一个工作日。
+    周末回退到上周五。
     """
     current = now or datetime.now()
-    cutoff_passed = (current.hour, current.minute) >= (17, 30)
     candidate = current
-    if current.weekday() >= 5 or not cutoff_passed:
+    if current.weekday() >= 5:
+        pass
+    elif (current.hour, current.minute) < (16, 30):
         candidate = current - timedelta(days=1)
+
     while candidate.weekday() >= 5:
         candidate = candidate - timedelta(days=1)
     return candidate.strftime("%Y%m%d")
@@ -170,11 +176,18 @@ def _run_with_timeout(fn, timeout=None):
     """在 daemon 线程中执行 fn()，超时后主线程立即返回。
 
     不能使用 ThreadPoolExecutor 的 context manager：baostock 卡在 socket recv
-    时，executor shutdown 会等待工作线程结束，导致“软超时”仍然卡住主流程。
+    时，executor shutdown 会等待工作线程结束，导致"软超时"仍然卡住主流程。
+
+    内置请求间隔控制，避免高频连续调用导致 baostock 服务端断连。
     """
-    global _bs_unavailable
+    global _bs_unavailable, _bs_last_request_time
     if timeout is None:
         timeout = _BS_TIMEOUT
+
+    # 速率控制：确保两次请求之间有最小间隔
+    elapsed = time.time() - _bs_last_request_time
+    if elapsed < _BS_REQUEST_INTERVAL:
+        time.sleep(_BS_REQUEST_INTERVAL - elapsed)
 
     result_queue = queue.Queue(maxsize=1)
 
@@ -192,6 +205,8 @@ def _run_with_timeout(fn, timeout=None):
         _bs_unavailable = True
         _record_degradation("baostock", "全部", f"调用硬超时 ({timeout}s)")
         raise TimeoutError(f"baostock 调用硬超时 ({timeout}s)")
+
+    _bs_last_request_time = time.time()
 
     status, payload = result_queue.get_nowait()
     if status == "error":
@@ -217,8 +232,18 @@ def _to_bs_date(date_str):
 
 
 def _is_hk(code_str):
-    """5位纯数字 → 港股"""
+    """港股判断：5位纯数字(02498) 或 HK前缀(HK2498/HK02498)"""
+    if code_str.upper().startswith("HK"):
+        return True
     return len(code_str) == 5 and code_str.isdigit()
+
+
+def _normalize_hk_code(code_str):
+    """港股代码标准化：HK2498 → 02498, HK02498 → 02498, 02498 → 02498"""
+    s = code_str.upper()
+    if s.startswith("HK"):
+        s = s[2:]
+    return s.zfill(5)
 
 
 def _cache_valid(cache_file, expiry_days):
@@ -565,7 +590,9 @@ def get_stock_prices(code, start_date, end_date, adjust="qfq"):
     """
     code_str = str(code).strip()
     is_hk = _is_hk(code_str)
-    if not is_hk:
+    if is_hk:
+        code_str = _normalize_hk_code(code_str)
+    else:
         code_str = code_str.zfill(6)
 
     agent_df = _load_agent_cached_series(

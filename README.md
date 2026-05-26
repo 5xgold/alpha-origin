@@ -1,6 +1,6 @@
 # 量化投资工具集
 
-AI 增强的个人量化投资系统，五大模块覆盖选股→归因→风控→信息的完整闭环。
+AI 增强的个人量化投资系统，三大模块覆盖归因→风控→形态检索的完整闭环，claw 自动调度 + 企微推送。
 
 > 核心原则：**归因 > 增强**（先搞清楚策略为什么有效）/ **生存 > 收益**（50%精力花在风控）/ **简单 > 复杂**（XGBoost > 深度学习）
 
@@ -27,8 +27,6 @@ vim .env                                   # 配置 API 密钥（可选）
 ./quickstart.sh risk-merge                           # 合并补数到长期 cache
 ./quickstart.sh risk                                 # 仅风控（总权益从 portfolio.toml 读取）
 ./quickstart.sh risk 500000                          # 手动指定总权益
-./quickstart.sh review 601216                        # 交易复盘（指定股票）
-./quickstart.sh earnings <PDF> 601216                # 财报摘要
 ./quickstart.sh pattern build 600519,000001          # 构建形态样本库
 ./quickstart.sh pattern query 600519                 # 查询股票形态
 ```
@@ -52,29 +50,6 @@ vim .env                                   # 配置 API 密钥（可选）
 - `equity_risk_budget`：单票最多亏总权益 2%，仓位越大止损越紧
 
 ## 系统架构
-
-```
-┌─────────────────────────────────────────────────────┐
-│                  策略信号层（主驾驶）      │
-│                       ↓ 买卖信号                     │
-├─────────────────────────────────────────────────────┤
-│              AI 增强层（本项目构建的核心）             │
-│  ┌──────────┐ ┌──────────┐ ┌───────────────────┐   │
-│  │ 模块1    │ │ 模块4    │ │ 模块2             │   │
-│  │ 策略归因 │ │ (搁置)   │ │ 风控引擎          │   │
-│  │·Alpha/β  │ │          │ │·仓位管理(事前)    │   │
-│  │·Brinson  │ │          │ │·止损止盈(事中)    │   │
-│  │·因子归因 │ │          │ │·异常检测(事后)    │   │
-│  └──────────┘ └──────────┘ └───────────────────┘   │
-│  ┌──────────────────────────────────────────────┐   │
-│  │ 模块3: LLM 信息压缩                          │   │
-│  │ 财报摘要 · 交易复盘                          │   │
-│  └──────────────────────────────────────────────┘   │
-├─────────────────────────────────────────────────────┤
-│                  执行与复盘层                        │
-│  交易执行(分批/TWAP) · 实时监控(P&L) · 归因分析     │
-└─────────────────────────────────────────────────────┘
-```
 ┌─────────────────────────────────────────────────────┐
 │                  策略信号层（主驾驶）                │
 │                       ↓ 买卖信号                     │
@@ -87,17 +62,13 @@ vim .env                                   # 配置 API 密钥（可选）
 │  │·成功案例 │ │·Brinson  │ │·止损止盈(事中)    │   │
 │  │·后验统计 │ │·因子归因 │ │·异常检测(事后)    │   │
 │  └──────────┘ └──────────┘ └───────────────────┘   │
-│  ┌──────────────────────────────────────────────┐   │
-│  │ 模块3: LLM 信息压缩                          │   │
-│  │ 财报摘要 · 交易复盘                          │   │
-│  └──────────────────────────────────────────────┘   │
 ├─────────────────────────────────────────────────────┤
 │                  执行与复盘层                        │
-│  交易执行(分批/TWAP) · 实时监控(P&L) · 归因分析     │
+│  交易执行 · claw 自动调度 · 企微推送 · 归因分析     │
 └─────────────────────────────────────────────────────┘
 ```
 
-## 五大模块
+## 核心模块
 
 ### ✅ 模块5：形态相似检索 — 历史成功案例驱动选股
 
@@ -117,8 +88,6 @@ cd pattern_finder
 ```
 
 详见 [pattern_finder/README.md](pattern_finder/README.md)
-
-## 四大模块
 
 ### ✅ 模块1：策略归因分析 — 搞清楚钱从哪来
 
@@ -186,22 +155,6 @@ trade_plan = {status = "active", stop_loss_strategy = "equity_risk_budget", plan
 
 详见 [risk_control/README.md](risk_control/README.md)
 
-### ✅ 模块3：LLM 信息压缩 — 从刷1小时到读2分钟
-
-不是用 LLM 预测市场，而是压缩处理信息的时间。
-
-| 场景 | 触发 | 效果 |
-|------|------|------|
-| 交易复盘 | 平仓后 / 手动运行 | 凭记忆复盘 → 数据驱动结构化复盘 |
-| 财报摘要 | 持仓公司发布财报 | 每份读30分钟 → 扫30秒 |
-
-```bash
-./quickstart.sh review 601216              # 交易复盘（指定股票）
-./quickstart.sh review                     # 复盘所有已平仓
-./quickstart.sh earnings <PDF> 601216      # 财报摘要
-```
-
-
 ### ~~模块4：环境分类模型~~ — 暂不开发
 
 > **搁置原因**：市场上已有成熟指标判断资金多空情况，宏观层面关注货币宽松/收紧即可，无需自建模型。若未来自由身开发系统时再考虑。
@@ -216,7 +169,7 @@ trade_plan = {status = "active", stop_loss_strategy = "equity_risk_budget", plan
 |------|------|---------|------|
 | 1-2月 | 策略归因分析 | Alpha/Beta 分离结果与师傅验证一致 | ✅ 已完成 |
 | 2-4月 | 风控系统 | 回测最大回撤减少 30%+ | ✅ Phase 1 完成 |
-| 3-5月 | LLM 信息压缩 | 财报与交易信息压缩流程跑通 | ✅ |
+| 3-5月 | LLM 信息压缩 | 财报与交易信息压缩流程跑通 | ✅ 已完成后移除，改为外部 prompt |
 | 5-7月 | ~~环境分类模型~~ | ~~过去 5 年状态分类准确率 >70%~~ | 💤 搁置 |
 | 7-9月 | 系统整合 | 信号→增强→风控→执行→复盘全流程 | 🔲 |
 | 9-12月 | 实盘验证 | 夏普比率↑ 最大回撤↓ | 🔲 |
@@ -225,12 +178,12 @@ trade_plan = {status = "active", stop_loss_strategy = "equity_risk_budget", plan
 
 目标：让系统每天自己跑起来，从手动跑脚本进化到自动触发 + 主动推送。
 
-| 优先级 | 方向 | 目标 | 时间 |
+| 优先级 | 方向 | 目标 | 状态 |
 |--------|------|------|------|
-| P1 | 风控数据补数 | 先检查行情依赖，缺口由行情源补齐，再跑本地风控信号 | 4-5月 |
-| P2 | 自动调度 + 微信推送 | 腾讯云 qclaw 定时触发，推送风控/复盘结果 | 5-6月 |
-| P3 | 持仓信息摘要 | 多源聚合 → LLM 压缩 → 结构化持仓情报 | 4-7月（持续） |
-| P4 | 持仓重要事件提醒 | 财报/分红/增减持等关键事件提前提醒 | 6-7月 |
+| P1 | 风控数据补数 | 先检查行情依赖，缺口由行情源补齐，再跑本地风控信号 | ✅ |
+| P2 | 自动调度 + 推送 | claw 定时触发，推送风控/复盘结果 | ✅ |
+| P3 | 持仓信息摘要 | 多源聚合 → LLM 压缩 → 结构化持仓情报 | 🔲 |
+| P4 | 持仓重要事件提醒 | 财报/分红/增减持等关键事件提前提醒 | 🔲 |
 
 详见 [docs/roadmap-phase2.md](docs/roadmap-phase2.md)
 
@@ -282,8 +235,6 @@ PythonProjects/
 │   ├── holdings.csv                # 持仓快照
 │   └── asset_summary.json          # 账户资产摘要
 ├── risk_control/data/              # 风控专属运行数据（不存持仓源）
-├── llm_digest/data/                # LLM专属数据
-│   └── earnings/                   # 财报PDF
 └── output/                         # 统一报告输出目录
 ```
 
@@ -304,6 +255,8 @@ PythonProjects/
 ├── shared/                         # 公共模块
 │   ├── config.py                   # 公共配置（数据源/缓存/外部服务）
 │   ├── data_provider.py            # 多数据源行情（baostock/futu/yfinance/eastmoney）
+│   ├── store.py                    # 数据访问层（统一内部数据读写接口）
+│   ├── portfolio_config.py         # portfolio.toml 解析
 │   ├── convert_broker_data.py      # PDF 交割单 → 标准 CSV
 │   └── pdf_portfolio.py            # PDF 持仓提取 + TWR 计算
 ├── data/
@@ -330,23 +283,25 @@ PythonProjects/
 │   │   ├── position_check.py       # 第一道防线：仓位管理
 │   │   ├── stop_loss.py            # 第二道防线：止损止盈 + 熔断
 │   │   └── anomaly_detect.py       # 第三道防线：异常检测
+│   ├── signals/                    # 信号插件系统（6个策略）
 │   ├── config.py                   # 风控专属参数
+│   ├── data_dependencies.py        # 数据需求检查 + 缺口分析
 │   ├── quickstart.sh
 │   └── data/
 │       └── data/                   # 风控运行数据
-├── llm_digest/                     # 模块3：LLM 信息压缩 ✅
-│   ├── config.py                   # LLM 配置 + prompt 参数
-│   ├── llm_client.py               # OpenAI 兼容 API 封装
-│   ├── scripts/
-│   │   ├── trade_review.py         # 交易复盘
-│   │   └── earnings_summary.py     # 财报摘要
-│   ├── prompts/                    # Jinja2 Prompt 模板
-│   └── data/earnings/              # 财报 PDF 存放目录
+├── pattern_finder/                 # 模块5：形态相似检索 ✅
+│   ├── core/                       # 特征提取 + 相似度检索
+│   ├── data/                       # 数据加载
+│   ├── visualization/              # HTML 报告生成
+│   ├── main.py                     # 入口
+│   └── quickstart.sh
+├── watchlist_signals/              # 观察列表信号策略
+│   └── strategies/                 # target_buy / breakout_buy
 └── docs/
     ├── quant-transformation-plan.md
     ├── macro-indicators-guide.md
-    ├── roadmap-phase2.md
-    └── superpowers/
+    ├── signal-system-design.md
+    └── configuration-guide.md
 ```
 
 ## 技术栈
@@ -354,7 +309,7 @@ PythonProjects/
 - Python 3.14 / pandas / statsmodels
 - 行情数据：baostock（A股）/ futu-api（港股）
 - PDF 解析：pdfplumber
-- LLM：DeepSeek / OpenAI 兼容 API + Jinja2 模板
+- 自动调度：claw + 企微推送
 - 可视化：pyecharts
 
 完整转型计划详见 [docs/quant-transformation-plan.md](docs/quant-transformation-plan.md)

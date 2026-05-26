@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### docs: 清理 README 与代码不一致
+
+- 删除已移除的 llm_digest 模块相关内容（目录结构、命令示例、模块描述、技术栈）
+- 删除重复的架构图，保留包含模块5的版本并更新执行层描述（claw 自动调度）
+- 更新 Phase 2 路线图状态：P1 风控补数 ✅、P2 自动调度 ✅
+- 项目结构图新增 signals/、data_dependencies.py、pattern_finder/、watchlist_signals/
+- 修正模块数量描述（五大→三大活跃模块）
+
 ### refactor(risk-control): 风控运行前生成补数需求
 
 - 新增 `risk_control/data_dependencies.py`，输出风控所需持仓 OHLCV、市场指数 close、入场保护 low 的补数清单

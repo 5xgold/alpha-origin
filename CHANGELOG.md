@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### feat(risk-control): 风控回测框架
+
+- 新增 `risk_control/backtest/` 模块：逐日模拟风控信号并执行交易
+  - `engine.py`：核心模拟循环，复用现有 `calc_stop_take_levels` / `run_all_signals`
+  - `executor.py`：信号→仓位变动执行逻辑（止损全卖/止盈1/3/熔断减仓）
+  - `params.py`：参数覆盖上下文管理器 + 笛卡尔积扫描编排
+  - `metrics.py`：回测指标计算（回撤减少/信号准确率/误杀率/收益影响）
+  - `report.py`：JSON + Markdown 报告生成
+  - `scenarios.py`：回测输入构造（从 portfolio.toml / 单股 what-if）
+  - `run.py`：CLI 入口
+- 新增 `./quickstart.sh backtest [start] [end] [--sweep]` 命令
+- 新增 `risk_control/tests/test_backtest.py`：14 个测试用例，覆盖执行器/引擎/指标
+- 支持参数扫描：默认扫描 ATR 止损倍数 [1.0, 1.5, 2.0, 2.5, 3.0] × 移动止损倍数 [1.0, 1.5, 2.0, 2.5]
+- 输出到 `output/backtest_*.json` 和 `output/backtest_*.md`
+
 ### docs: 清理 README 与代码不一致
 
 - 删除已移除的 llm_digest 模块相关内容（目录结构、命令示例、模块描述、技术栈）

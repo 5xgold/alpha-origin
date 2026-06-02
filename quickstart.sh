@@ -38,6 +38,7 @@ usage() {
     echo "  ./quickstart.sh risk-data [日期]             # 风控补数需求检查"
     echo "  ./quickstart.sh risk-merge [日期]            # 合并外部补数 cache"
     echo "  ./quickstart.sh risk [总权益]"
+    echo "  ./quickstart.sh backtest [开始日期] [结束日期] [--sweep]  # 风控回测"
     echo "  ./quickstart.sh review [股票代码]          # 交易复盘"
     echo "  ./quickstart.sh earnings <PDF> <股票代码>  # 财报摘要"
     echo "  ./quickstart.sh pattern <command> [args]  # 形态检索"
@@ -123,6 +124,27 @@ do_risk_merge() {
     python3 "$RC_DIR/agent_price_cache.py" $args --strict
 }
 
+# ── 风控回测 ──
+do_backtest() {
+    local args=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --sweep) args="$args --sweep"; shift ;;
+            --regime) args="$args --regime $2"; shift 2 ;;
+            *)
+                if [ -z "$(echo "$args" | grep -- '--start')" ]; then
+                    args="$args --start $1"
+                else
+                    args="$args --end $1"
+                fi
+                shift ;;
+        esac
+    done
+    step "风控回测"
+    python3 "$RC_DIR/backtest/run.py" $args
+    info "回测报告: output/"
+}
+
 # ── 风控检查 ──
 do_risk() {
     local equity="$1"
@@ -199,6 +221,9 @@ case "$CMD" in
         ;;
     risk-merge)
         do_risk_merge "$1"
+        ;;
+    backtest)
+        do_backtest "$@"
         ;;
     review)
         do_review "$1"

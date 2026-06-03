@@ -6,10 +6,10 @@
 
 风控标准流程：
 
-1. 检查风控策略依赖的数据范围：`risk_control/data_dependencies.py` 根据当前策略、持仓和市场指数生成需求。
+1. 检查风控策略依赖的数据范围：`app/risk_control/data_dependencies.py` 根据当前策略、持仓和市场指数生成需求。
 2. 数据获取：`risk` 在缺数时调用 baostock/Futu 等行情源补缺口；`Ready=True` 时不刷新历史行情。
-3. 数据合并：行情源补数直接写入长期 cache；外部 JSON 补数可用 `risk_control/agent_price_cache.py` 合并。
-4. 跑风控策略：`risk_control/scripts/risk_report.py` 默认只读取本地 cache 执行策略。
+3. 数据合并：行情源补数直接写入长期 cache；外部 JSON 补数可用 `app/risk_control/agent_price_cache.py` 合并。
+4. 跑风控策略：`app/risk_control/scripts/risk_report.py` 默认只读取本地 cache 执行策略。
 5. 输出结论模板：导出 `risk_snapshot` 和 `risk_report`，外部 prompt 再组织每日复盘正文。
 
 ```mermaid
@@ -173,7 +173,7 @@ sequenceDiagram
 
 ## 当前实现改造顺序
 
-1. `risk_control/data_dependencies.py` 从 `portfolio.toml` 和 `MARKET_INDEX` 生成补数请求。
+1. `app/risk_control/data_dependencies.py` 从 `portfolio.toml` 和 `MARKET_INDEX` 生成补数请求。
 2. `quickstart.sh risk` 在缺口存在时调用行情源补齐本地 cache。
 3. 外部 JSON 补数仍可通过 `quickstart.sh risk-merge` 合并、去重、排序到长期 CSV cache。
 4. `risk` 默认要求 cache 覆盖关键行情；缺关键数据时直接停止，不再假装风控可靠。

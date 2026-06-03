@@ -32,7 +32,7 @@ def _load_toml(toml_path: str = None) -> dict:
             )
 
     if toml_path is None:
-        toml_path = Path(__file__).parent.parent / "portfolio.toml"
+        toml_path = Path(__file__).parent.parent.parent / "portfolio.toml"
     else:
         toml_path = Path(toml_path)
 

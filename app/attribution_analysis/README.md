@@ -10,7 +10,7 @@
 ### 1. 安装依赖
 
 ```bash
-cd attribution_analysis
+cd app/attribution_analysis
 pip install -r requirements.txt
 ```
 

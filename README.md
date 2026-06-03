@@ -38,7 +38,7 @@ vim .env                                   # 配置 API 密钥（可选）
 - `[[holdings]]` 当前持仓，用于风控和持仓复盘
 - `[[watchlist]]` 待买入观察列表，用于 agent/prompt 侧扩展
 
-归因模块和风控模块架构独立：归因读取 `attribution_analysis/data/` 的交易、资金流和持仓快照；风控只读取 `portfolio.toml` 和本地行情 cache。两者只共享 `shared/` 中的历史行情等公共取数逻辑，不互相读取中间结果。
+归因模块和风控模块架构独立：归因读取 `app/attribution_analysis/data/` 的交易、资金流和持仓快照；风控只读取 `portfolio.toml` 和本地行情 cache。两者只共享 `app/shared/` 中的历史行情等公共取数逻辑，不互相读取中间结果。
 
 同时支持两类可扩展规则：
 - `[[holdings]].risk_rules`：覆盖默认止损/止盈/移动止损参数
@@ -81,13 +81,13 @@ vim .env                                   # 配置 API 密钥（可选）
 - 后验统计：胜率/盈亏比/收益分布/分年度表现
 
 ```bash
-cd pattern_finder
+cd app/pattern_finder
 ./quickstart.sh build 600519,000001,000858  # 构建样本库
 ./quickstart.sh query 600519                 # 查询单只股票
 ./quickstart.sh scan                         # 扫描当前持仓
 ```
 
-详见 [pattern_finder/README.md](pattern_finder/README.md)
+详见 [app/pattern_finder/README.md](app/pattern_finder/README.md)
 
 ### ✅ 模块1：策略归因分析 — 搞清楚钱从哪来
 
@@ -101,18 +101,18 @@ cd pattern_finder
 - 多数据源行情：A股 baostock / 港股 FutuOpenD → 东方财富
 
 ```bash
-cd attribution_analysis
+cd app/attribution_analysis
 ./quickstart.sh data/raw/对账单.pdf 2026-01-01 2026-03-31
 ```
 
-详见 [attribution_analysis/README.md](attribution_analysis/README.md)
+详见 [app/attribution_analysis/README.md](app/attribution_analysis/README.md)
 
 ### ✅ 模块2：风控系统 — 三道防线，活下来最重要
 
 收盘后运行日线级别风控检查，用于晚间复盘和制定第二天交易计划。设计上预留日内数据扩展接口。
 
 ```bash
-cd risk_control
+cd app/risk_control
 ./quickstart.sh 500000
 ```
 
@@ -153,7 +153,7 @@ trade_plan = {status = "active", stop_loss_strategy = "equity_risk_budget", plan
 
 触发逻辑：1 个信号预警 / 2 个减仓 50% / 3 个清仓
 
-详见 [risk_control/README.md](risk_control/README.md)
+详见 [app/risk_control/README.md](app/risk_control/README.md)
 
 ### ~~模块4：环境分类模型~~ — 暂不开发
 
@@ -189,7 +189,7 @@ trade_plan = {status = "active", stop_loss_strategy = "equity_risk_budget", plan
 
 ### 风控补数入口
 
-项目内只保留风控信号。风控账户、持仓和策略配置只读取 `portfolio.toml`；不读取 `attribution_analysis/data/asset_summary.json`、PDF 解析持仓快照等中间结果。每日复盘正文由外部 prompt 模板生成；进入风控前，先读取本地数据需求并补齐 cache：
+项目内只保留风控信号。风控账户、持仓和策略配置只读取 `portfolio.toml`；不读取 `app/attribution_analysis/data/asset_summary.json`、PDF 解析持仓快照等中间结果。每日复盘正文由外部 prompt 模板生成；进入风控前，先读取本地数据需求并补齐 cache：
 
 风控标准流程：
 
@@ -230,17 +230,17 @@ PythonProjects/
 ├── data/                           # 共享数据（所有模块可访问）
 │   ├── cache/                      # 行情数据缓存（自动生成）
 │   └── raw/                        # 原始输入文件（PDF对账单）
-├── attribution_analysis/data/      # 归因分析专属数据
+├── app/attribution_analysis/data/  # 归因分析专属数据
 │   ├── trades.csv                  # 交易记录（从PDF解析）
 │   ├── holdings.csv                # 持仓快照
 │   └── asset_summary.json          # 账户资产摘要
-├── risk_control/data/              # 风控专属运行数据（不存持仓源）
+├── app/risk_control/data/          # 风控专属运行数据（不存持仓源）
 └── output/                         # 统一报告输出目录
 ```
 
 **数据分类规则：**
 - **共享数据** (`/data/`) - 行情缓存、基准数据，通过 `shared.data_provider` 访问
-- **模块专属** (`{module}/data/`) - 模块特定的输入/输出，模块内部访问
+- **模块专属** (`app/{module}/data/`) - 模块特定的输入/输出，模块内部访问
 
 详见 [docs/data-directory-structure.md](docs/data-directory-structure.md)
 
@@ -252,56 +252,59 @@ PythonProjects/
 ├── .venv/                          # 共享虚拟环境
 ├── requirements.txt                # 全局依赖
 ├── quickstart.sh                   # 一键运行入口；风控独立读取 portfolio.toml
-├── shared/                         # 公共模块
-│   ├── config.py                   # 公共配置（数据源/缓存/外部服务）
-│   ├── data_provider.py            # 多数据源行情（baostock/futu/yfinance/eastmoney）
-│   ├── store.py                    # 数据访问层（统一内部数据读写接口）
-│   ├── portfolio_config.py         # portfolio.toml 解析
-│   ├── convert_broker_data.py      # PDF 交割单 → 标准 CSV
-│   └── pdf_portfolio.py            # PDF 持仓提取 + TWR 计算
+├── conftest.py                     # pytest 根配置（将 app/ 加入 sys.path）
+├── portfolio.toml                  # 持仓 + 账户配置（仓库根目录）
 ├── data/
 │   └── cache/                      # 行情数据缓存（两模块共用）
 ├── output/                         # 统一报告输出（归因 + 风控）
-├── attribution_analysis/           # 模块1：策略归因分析 ✅
-│   ├── scripts/
-│   │   ├── attribution.py          # 核心归因分析（Alpha/Beta + 报告生成）
-│   │   └── brinson.py              # Brinson 行业归因（BHB 模型）
-│   ├── config.py                   # 归因专属配置（基准/报告）
-│   ├── quickstart.sh
-│   ├── tests/
-│   │   └── test_attribution.py     # 归因回归测试
-│   └── data/
-│       ├── raw/                    # 原始 PDF 对账单
-│       ├── trades.csv              # 交割单
-│       ├── holdings.csv            # 持仓快照
-│       ├── cash_flows.csv          # 外部资金流
-│       └── asset_summary.json      # 账户资产（总权益/市值/现金）
-├── risk_control/                   # 模块2：风控系统 ✅
-│   ├── scripts/
-│   │   ├── risk_report.py          # 主入口：风控检查报告
-│   │   ├── risk_calc.py            # 底层计算（ATR/波动率/相关性/回撤）
-│   │   ├── position_check.py       # 第一道防线：仓位管理
-│   │   ├── stop_loss.py            # 第二道防线：止损止盈 + 熔断
-│   │   └── anomaly_detect.py       # 第三道防线：异常检测
-│   ├── signals/                    # 信号插件系统（6个策略）
-│   ├── config.py                   # 风控专属参数
-│   ├── data_dependencies.py        # 数据需求检查 + 缺口分析
-│   ├── quickstart.sh
-│   └── data/
-│       └── data/                   # 风控运行数据
-├── pattern_finder/                 # 模块5：形态相似检索 ✅
-│   ├── core/                       # 特征提取 + 相似度检索
-│   ├── data/                       # 数据加载
-│   ├── visualization/              # HTML 报告生成
-│   ├── main.py                     # 入口
-│   └── quickstart.sh
-├── watchlist_signals/              # 观察列表信号策略
-│   └── strategies/                 # target_buy / breakout_buy
-└── docs/
-    ├── quant-transformation-plan.md
-    ├── macro-indicators-guide.md
-    ├── signal-system-design.md
-    └── configuration-guide.md
+├── docs/
+│   ├── quant-transformation-plan.md
+│   ├── macro-indicators-guide.md
+│   ├── signal-system-design.md
+│   └── configuration-guide.md
+└── app/                            # 源码根目录（所有模块按顶级包名导入）
+    ├── shared/                     # 公共模块
+    │   ├── config.py               # 公共配置（数据源/缓存/外部服务）
+    │   ├── data_provider.py        # 多数据源行情（baostock/futu/yfinance/eastmoney）
+    │   ├── store.py                # 数据访问层（统一内部数据读写接口）
+    │   ├── portfolio_config.py     # portfolio.toml 解析
+    │   ├── convert_broker_data.py  # PDF 交割单 → 标准 CSV
+    │   └── pdf_portfolio.py        # PDF 持仓提取 + TWR 计算
+    ├── attribution_analysis/       # 模块1：策略归因分析 ✅
+    │   ├── scripts/
+    │   │   ├── attribution.py      # 核心归因分析（Alpha/Beta + 报告生成）
+    │   │   └── brinson.py          # Brinson 行业归因（BHB 模型）
+    │   ├── config.py               # 归因专属配置（基准/报告）
+    │   ├── quickstart.sh
+    │   ├── tests/
+    │   │   └── test_attribution.py # 归因回归测试
+    │   └── data/
+    │       ├── raw/                # 原始 PDF 对账单
+    │       ├── trades.csv          # 交割单
+    │       ├── holdings.csv        # 持仓快照
+    │       ├── cash_flows.csv      # 外部资金流
+    │       └── asset_summary.json  # 账户资产（总权益/市值/现金）
+    ├── risk_control/               # 模块2：风控系统 ✅
+    │   ├── scripts/
+    │   │   ├── risk_report.py      # 主入口：风控检查报告
+    │   │   ├── risk_calc.py        # 底层计算（ATR/波动率/相关性/回撤）
+    │   │   ├── position_check.py   # 第一道防线：仓位管理
+    │   │   ├── stop_loss.py        # 第二道防线：止损止盈 + 熔断
+    │   │   └── anomaly_detect.py   # 第三道防线：异常检测
+    │   ├── signals/                # 信号插件系统（6个策略）
+    │   ├── config.py               # 风控专属参数
+    │   ├── data_dependencies.py    # 数据需求检查 + 缺口分析
+    │   ├── quickstart.sh
+    │   └── data/                   # 风控运行数据
+    ├── pattern_finder/             # 模块5：形态相似检索 ✅
+    │   ├── core/                   # 特征提取 + 相似度检索
+    │   ├── data/                   # 数据加载
+    │   ├── visualization/          # HTML 报告生成
+    │   ├── main.py                 # 入口
+    │   └── quickstart.sh
+    └── watchlist_signals/          # 观察列表信号策略
+        └── strategies/             # target_buy / breakout_buy
+```
 ```
 
 ## 技术栈

@@ -26,7 +26,7 @@ from shared.data_provider import (
 from shared.portfolio_config import load_portfolio_from_toml
 
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 DEFAULT_PORTFOLIO_TOML = ROOT_DIR / "portfolio.toml"
 OUTPUT_DIR = ROOT_DIR / "output"
 AGENT_PRICE_CACHE_DIR = Path(CACHE_DIR) / "agent_prices"

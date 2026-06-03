@@ -10,14 +10,15 @@ from datetime import datetime
 
 import pandas as pd
 
-_ROOT = Path(__file__).parent.parent
+_SRC_ROOT = Path(__file__).parent.parent          # app/
+_REPO_ROOT = _SRC_ROOT.parent                     # 仓库根目录
 
 # ── 内部路径（仅本模块使用，不对外暴露）──
 
-_AA_DATA_DIR = _ROOT / "attribution_analysis" / "data"
-_RC_DATA_DIR = _ROOT / "risk_control" / "data"
-_OUTPUT_DIR = _ROOT / "output"
-_PORTFOLIO_TOML = _ROOT / "portfolio.toml"
+_AA_DATA_DIR = _SRC_ROOT / "attribution_analysis" / "data"
+_RC_DATA_DIR = _SRC_ROOT / "risk_control" / "data"
+_OUTPUT_DIR = _REPO_ROOT / "output"
+_PORTFOLIO_TOML = _REPO_ROOT / "portfolio.toml"
 
 
 # ═══════════════════════════════════════════

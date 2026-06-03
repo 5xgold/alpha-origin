@@ -6,8 +6,8 @@
 # 生成的文件（均已在 .gitignore 中，不会被提交）：
 #   .env                          — API 密钥
 #   portfolio.toml                — 持仓 + 账户信息
-#   attribution_analysis/data/    — 归因分析数据目录
-#   risk_control/data/            — 风控数据目录
+#   app/attribution_analysis/data/    — 归因分析数据目录
+#   app/risk_control/data/            — 风控数据目录
 
 set -e
 
@@ -46,7 +46,7 @@ else
 fi
 
 # 3. 数据目录
-for dir in "attribution_analysis/data" "risk_control/data" "output" "data/cache"; do
+for dir in "app/attribution_analysis/data" "app/risk_control/data" "output" "data/cache"; do
     mkdir -p "$ROOT_DIR/$dir"
 done
 info "数据目录已就绪"

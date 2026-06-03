@@ -16,7 +16,7 @@
 ## 快速开始
 
 ```bash
-cd pattern_finder
+cd app/pattern_finder
 
 # 1. 构建样本库（茅台、平安、五粮液，2020-2024）
 ./quickstart.sh build 600519,000001,000858 --start 20200101 --end 20241231

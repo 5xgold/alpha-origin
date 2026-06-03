@@ -20,7 +20,7 @@ def generate_report(sweep_results, prices_dict, initial_equity, output_dir=None)
     from risk_control.backtest.metrics import compute_metrics
 
     if output_dir is None:
-        output_dir = Path(__file__).parent.parent.parent / "output"
+        output_dir = Path(__file__).parent.parent.parent.parent / "output"
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 

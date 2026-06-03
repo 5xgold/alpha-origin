@@ -125,7 +125,7 @@ PythonProjects/
 ├── .env                      # API 密钥（不提交）
 ├── portfolio.toml            # 持仓配置（不提交）
 ├── portfolio.toml.example    # 持仓示例（提交到 Git）
-├── risk_control/data/        # 风控运行数据，不存持仓源
+├── app/risk_control/data/    # 风控运行数据，不存持仓源
 ```
 
 ## 为什么分两个文件？

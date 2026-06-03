@@ -6,7 +6,8 @@
 set -e
 
 cd "$(dirname "$0")"
-ROOT_DIR="$(cd .. && pwd)"
+APP_ROOT="$(cd .. && pwd)"          # app/ — Python 模块根目录
+ROOT_DIR="$(cd ../.. && pwd)"       # 仓库根目录 — venv / .env / portfolio.toml / output
 
 # 颜色
 GREEN='\033[0;32m'
@@ -53,7 +54,7 @@ if [ ! -f "$ROOT_DIR/.env" ]; then
 fi
 
 # ── 检查持仓文件 ──
-mkdir -p data ../output
+mkdir -p data "$ROOT_DIR/output"
 
 if [ ! -f "$ROOT_DIR/portfolio.toml" ]; then
     error "未找到持仓文件: $ROOT_DIR/portfolio.toml"
@@ -69,11 +70,11 @@ fi
 echo ""
 
 # ── 风控补数需求检查 ──
-cd "$ROOT_DIR"
+cd "$APP_ROOT"
 python3 risk_control/data_dependencies.py --fetch-missing --strict
 
 # ── 运行风控检查 ──
-cd "$ROOT_DIR"
+cd "$APP_ROOT"
 if [ -n "$EQUITY" ]; then
     python3 risk_control/scripts/risk_report.py --equity "$EQUITY"
 else

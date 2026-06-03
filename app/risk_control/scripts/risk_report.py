@@ -43,7 +43,7 @@ from risk_control.signals import (
 # 数据加载
 # ═══════════════════════════════════════════
 
-ROOT_DIR = Path(__file__).parent.parent.parent
+ROOT_DIR = Path(__file__).parent.parent.parent.parent
 DEFAULT_PORTFOLIO_TOML = ROOT_DIR / "portfolio.toml"
 
 
@@ -618,7 +618,7 @@ def run_risk_check(total_equity, refresh_market_data=False):
     print(report_text)
 
     # 10. 保存 Markdown
-    output_dir = Path(__file__).parent.parent.parent / "output"
+    output_dir = Path(__file__).parent.parent.parent.parent / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime('%Y%m%d_%H%M')
     md_path = output_dir / f"risk_report_{ts}.md"

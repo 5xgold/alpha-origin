@@ -19,7 +19,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from shared.config import CACHE_DIR
 
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 OUTPUT_DIR = ROOT_DIR / "output"
 AGENT_CACHE_DIR = Path(CACHE_DIR) / "agent_prices"
 INCOMING_DIR = AGENT_CACHE_DIR / "incoming"

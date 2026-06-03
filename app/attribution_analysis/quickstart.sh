@@ -35,7 +35,7 @@ PDF_INPUT="${POSITIONAL[0]:-data/raw/$(ls data/raw/*.pdf 2>/dev/null | head -1 |
 START_DATE="${POSITIONAL[1]:-2026-01-01}"
 END_DATE="${POSITIONAL[2]:-2026-03-31}"
 DATA_DIR="data"
-REPORT="../output/report.md"
+REPORT="../../output/report.md"
 
 # ── 检查环境 ──
 echo "=========================================="
@@ -47,7 +47,7 @@ command -v python3 >/dev/null 2>&1 || error "未找到 python3，请先安装 Py
 info "Python: $(python3 --version)"
 
 # ── 创建目录 ──
-mkdir -p data/raw data/cache ../output
+mkdir -p data/raw data/cache ../../output
 
 # ── 虚拟环境 ──
 VENV_DIR=".venv"

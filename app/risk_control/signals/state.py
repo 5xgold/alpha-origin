@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from datetime import datetime, date
 
-STATE_FILE = Path(__file__).parent.parent.parent / "data" / "cache" / "risk_state.json"
+STATE_FILE = Path(__file__).parent.parent.parent.parent / "data" / "cache" / "risk_state.json"
 
 _EMPTY_STATE = {
     "_meta": {"version": 1, "last_updated": ""},

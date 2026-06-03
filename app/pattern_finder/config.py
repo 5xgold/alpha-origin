@@ -54,7 +54,7 @@ COSINE_WEIGHT = 0.5
 # ─── 数据路径 ─────────────────────────────────────────────────────
 # Use shared cache directory for consistency
 LIBRARY_CACHE_DIR = str(Path(SHARED_CACHE_DIR) / "pattern_finder")
-OUTPUT_DIR = str(Path(__file__).parent.parent / "output")
+OUTPUT_DIR = str(Path(__file__).parent.parent.parent / "output")
 
 # Module-specific data directory
 DATA_DIR = str(Path(__file__).parent / "data")

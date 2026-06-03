@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### refactor(project): 源码模块收敛到 app/ 目录
+
+- 将 `attribution_analysis/`、`pattern_finder/`、`risk_control/`、`shared/`、`watchlist_signals/` 五个源码模块统一迁移到 `app/` 下（`git mv` 保留历史）
+- 仓库根目录保留运行时资源：`data/`、`output/`、`portfolio.toml`、`.env`、`docs/`、`scripts/`、`quickstart.sh`、`.venv`
+- 修正资源路径锚点（指向仓库根目录的 `output/` / `portfolio.toml` / `data/cache/` 各 +1 层 `.parent`）：
+  - `shared/config.py`、`shared/store.py`：拆分 `_SRC_ROOT`（app/）与 `_REPO_ROOT`（仓库根）
+  - `attribution_analysis/config.py`、`pattern_finder/config.py`：`OUTPUT_DIR`
+  - `risk_control/{agent_price_cache,data_dependencies}.py`、`scripts/risk_report.py`、`backtest/report.py`、`signals/state.py`
+  - `watchlist_signals/state.py`、`shared/portfolio_config.py`
+  - `sys.path` 锚点指向新源码根 `app/`，无需修改（自动随模块层级修正）
+- 新增仓库根 `conftest.py`：将 `app/` 注入 `sys.path`，支持在仓库根目录运行 `pytest`
+- 更新 `quickstart.sh`（`AA_DIR`/`RC_DIR`/`shared` 路径、`cd app/pattern_finder`）；修正各模块 `quickstart.sh` 的 venv 与 `output/` 相对路径
+- 更新 `scripts/init_project.sh` 数据目录路径与 `.gitignore`（`app/{attribution_analysis,risk_control}/data/`）
+- 更新文档：`README.md`、`docs/data-directory-structure.md`、`docs/risk-data-dependency-graph.md`、`docs/signal-system-design.md`、`docs/configuration-guide.md`
+- 验证：49 个测试用例全部通过，资源路径锚点全部解析到仓库根目录
+
 ### feat(risk-control): 风控回测框架
 
 - 新增 `risk_control/backtest/` 模块：逐日模拟风控信号并执行交易

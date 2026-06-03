@@ -4,9 +4,12 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# .env 优先从项目根目录加载，兼容旧位置
-_root = Path(__file__).parent.parent
-_env_candidates = [_root / ".env", _root / "attribution_analysis" / ".env"]
+# 源码根目录（app/）与仓库根目录（repo/）
+_SRC_ROOT = Path(__file__).parent.parent          # app/
+_REPO_ROOT = _SRC_ROOT.parent                     # 仓库根目录
+
+# .env 优先从仓库根目录加载，兼容旧位置
+_env_candidates = [_REPO_ROOT / ".env", _SRC_ROOT / "attribution_analysis" / ".env"]
 for _env in _env_candidates:
     if _env.exists():
         load_dotenv(_env)
@@ -18,7 +21,7 @@ FUTU_HOST = os.getenv("FUTU_HOST", "127.0.0.1")
 FUTU_PORT = int(os.getenv("FUTU_PORT", "11111"))
 
 # 数据缓存
-CACHE_DIR = str(_root / "data" / "cache")
+CACHE_DIR = str(_REPO_ROOT / "data" / "cache")
 CACHE_EXPIRY_DAYS = 7
 SECTOR_CACHE_DAYS = 30
 SECTOR_CLASSIFICATION = "sw"

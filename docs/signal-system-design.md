@@ -189,13 +189,13 @@ Phase 3 (盈利≥25%): 止损 = 最高价 - 1.0×ATR（紧移动止损）
 
 ### 添加新策略
 
-1. 在 `risk_control/signals/strategies/` 下创建新文件
+1. 在 `app/risk_control/signals/strategies/` 下创建新文件
 2. 用 `@register_signal` 装饰器注册
 3. 在 `strategies/__init__.py` 中添加导入
 4. 在 `config.py` 中添加配置常量（如需要）
 
 ```python
-# risk_control/signals/strategies/my_strategy.py
+# app/risk_control/signals/strategies/my_strategy.py
 from risk_control.signals.registry import register_signal
 
 @register_signal("my_strategy", signal_type="sell")

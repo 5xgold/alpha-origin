@@ -1,7 +1,7 @@
 # Data folder
-attribution_analysis/data/
+app/attribution_analysis/data/
 data
-risk_control/data/
+app/risk_control/data/
 llm_digest/data/
 output/
 

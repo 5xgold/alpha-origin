@@ -5,7 +5,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 
-STATE_FILE = Path(__file__).parent.parent / "data" / "cache" / "watchlist_state.json"
+STATE_FILE = Path(__file__).parent.parent.parent / "data" / "cache" / "watchlist_state.json"
 
 _EMPTY_STATE = {
     "_meta": {"version": 1, "last_updated": ""},

@@ -11,22 +11,24 @@ PythonProjects/
 │   │   └── ...
 │   └── raw/                        # 原始输入文件（PDF对账单等）
 │
-├── attribution_analysis/data/      # 归因分析专属数据
-│   ├── trades.csv                  # 交易记录（从PDF解析）
-│   ├── holdings.csv                # 持仓快照（从PDF解析）
-│   ├── cash_flows.csv              # 资金流水（从PDF解析）
-│   ├── asset_summary.json          # 账户资产摘要
-│   └── cache/                      # 模块专属缓存（如有）
+├── output/                         # 统一报告输出目录
 │
-├── risk_control/data/              # 风控运行数据（不存持仓源）
-│
-├── llm_digest/data/                # LLM专属数据
-│   └── earnings/                   # 财报PDF存放目录
-│
-└── pattern_finder/data/            # 形态检索专属数据
-    ├── cache/                      # 样本库缓存（实际存在 /data/cache/pattern_finder/）
-    └── raw/                        # 自定义CSV数据（可选）
+└── app/                            # 源码根目录
+    ├── attribution_analysis/data/  # 归因分析专属数据
+    │   ├── trades.csv              # 交易记录（从PDF解析）
+    │   ├── holdings.csv            # 持仓快照（从PDF解析）
+    │   ├── cash_flows.csv          # 资金流水（从PDF解析）
+    │   ├── asset_summary.json      # 账户资产摘要
+    │   └── cache/                  # 模块专属缓存（如有）
+    │
+    ├── risk_control/data/          # 风控运行数据（不存持仓源）
+    │
+    └── pattern_finder/data/        # 形态检索专属数据
+        ├── cache/                  # 样本库缓存（实际存在 /data/cache/pattern_finder/）
+        └── raw/                    # 自定义CSV数据（可选）
 ```
+
+> 注：账户、持仓、资金等敏感数据目录与 `output/`、`portfolio.toml`、`.env` 仍位于仓库根目录；源码模块统一收敛到 `app/` 下，按顶级包名（`shared`、`risk_control` 等）导入。
 
 ## 数据分类规则
 
@@ -47,7 +49,7 @@ PythonProjects/
 - 统一缓存策略（过期时间、清理规则）
 - 不包含模块特定的业务数据
 
-### 2. 模块专属数据（{module}/data/）
+### 2. 模块专属数据（app/{module}/data/）
 
 **存放内容：**
 - 模块特定的输入/输出文件
@@ -65,7 +67,7 @@ PythonProjects/
 
 ## 具体模块说明
 
-### attribution_analysis/data/
+### app/attribution_analysis/data/
 
 **用途：** 归因分析的输入数据（从PDF解析）
 
@@ -77,12 +79,12 @@ PythonProjects/
 
 **生成方式：**
 ```bash
-python shared/convert_broker_data.py --input data/raw/对账单.pdf --output-dir attribution_analysis/data
+python app/shared/convert_broker_data.py --input data/raw/对账单.pdf --output-dir app/attribution_analysis/data
 ```
 
 **依赖：** 仅归因分析模块使用
 
-### risk_control/data/
+### app/risk_control/data/
 
 **用途：** 风控模块运行过程中的本地数据。账户、持仓和持仓级策略配置统一读取项目根目录 `portfolio.toml`。
 
@@ -97,7 +99,7 @@ python shared/convert_broker_data.py --input data/raw/对账单.pdf --output-dir
 
 **依赖：** 仅 LLM 模块使用
 
-### pattern_finder/data/
+### app/pattern_finder/data/
 
 **用途：** 形态检索的自定义数据（可选）
 
@@ -114,11 +116,11 @@ python shared/convert_broker_data.py --input data/raw/对账单.pdf --output-dir
    data/raw/对账单.pdf
    ↓
 2. PDF 解析
-   shared/convert_broker_data.py
+   app/shared/convert_broker_data.py
    ↓
 3. 模块专属数据
-   attribution_analysis/data/trades.csv
-   attribution_analysis/data/holdings.csv
+   app/attribution_analysis/data/trades.csv
+   app/attribution_analysis/data/holdings.csv
    ↓
 4. 风控配置
    portfolio.toml
@@ -139,10 +141,10 @@ python shared/convert_broker_data.py --input data/raw/对账单.pdf --output-dir
 data/
 
 # 模块专属数据目录（不提交）
-attribution_analysis/data/
-risk_control/data/
+app/attribution_analysis/data/
+app/risk_control/data/
 llm_digest/data/
-pattern_finder/data/
+app/pattern_finder/data/
 
 # 输出目录（不提交）
 output/
@@ -159,7 +161,7 @@ output/
 
 ### ❌ 不应该做的
 
-1. **跨模块直接访问** - 不要在 risk_control 中直接读取 `attribution_analysis/data/trades.csv`
+1. **跨模块直接访问** - 不要在 risk_control 中直接读取 `app/attribution_analysis/data/trades.csv`
 2. **重复缓存** - 不要在模块内部重复缓存行情数据
 3. **混淆数据类型** - 不要把模块专属数据放到共享 `/data/` 目录
 4. **硬编码路径** - 不要硬编码绝对路径，使用 `shared.config` 获取
@@ -178,10 +180,10 @@ rm -rf data/cache/pattern_finder/
 ### 清理模块数据
 ```bash
 # 清理归因分析数据（需要重新解析PDF）
-rm -rf attribution_analysis/data/*
+rm -rf app/attribution_analysis/data/*
 
 # 清理风控运行数据（不删除 portfolio.toml）
-rm -rf risk_control/data/*
+rm -rf app/risk_control/data/*
 ```
 
 ### 清理输出报告
@@ -222,12 +224,12 @@ A: 因为模块专属数据（如 trades.csv）只有特定模块使用，放在
 
 A: 如果真的需要共享，应该：
 1. 将数据提升到 `/data/` 目录
-2. 创建 `shared/` 下的工具函数统一访问
+2. 创建 `app/shared/` 下的工具函数统一访问
 3. 更新所有模块使用新的访问方式
 
 ### Q: pattern_finder 的样本库应该放哪里？
 
-A: 样本库是缓存性质的数据，应该放在 `/data/cache/pattern_finder/`，通过 `pattern_finder/config.py` 中的 `LIBRARY_CACHE_DIR` 配置。
+A: 样本库是缓存性质的数据，应该放在 `/data/cache/pattern_finder/`，通过 `app/pattern_finder/config.py` 中的 `LIBRARY_CACHE_DIR` 配置。
 
 ### Q: 临时文件应该放哪里？
 

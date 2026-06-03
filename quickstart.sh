@@ -27,8 +27,8 @@ warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 step()  { echo -e "\n${CYAN}══ $1 ══${NC}\n"; }
 
-AA_DIR="$ROOT_DIR/attribution_analysis"
-RC_DIR="$ROOT_DIR/risk_control"
+AA_DIR="$ROOT_DIR/app/attribution_analysis"
+RC_DIR="$ROOT_DIR/app/risk_control"
 
 usage() {
     echo "用法:"
@@ -75,11 +75,11 @@ do_parse() {
     [ ! -f "$pdf" ] && error "PDF 文件不存在: $pdf"
 
     step "PDF 解析"
-    python3 "$ROOT_DIR/shared/convert_broker_data.py" \
+    python3 "$ROOT_DIR/app/shared/convert_broker_data.py" \
         --input "$pdf" \
         --output-dir "$AA_DIR/data"
 
-    info "PDF 解析完成；归因数据已写入 attribution_analysis/data/"
+    info "PDF 解析完成；归因数据已写入 app/attribution_analysis/data/"
 }
 
 # ── 策略归因 ──
@@ -192,7 +192,7 @@ do_earnings() {
 # ── 形态检索 ──
 do_pattern() {
     step "形态检索"
-    cd "$ROOT_DIR/pattern_finder"
+    cd "$ROOT_DIR/app/pattern_finder"
     ./quickstart.sh "$@"
 }
 

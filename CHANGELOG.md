@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### feat(dividend-grid): 股息网格计算器
+
+- 新增 `app/dividend_grid/` 模块：给定每股股息、现价、无风险利率(十年期国债)，按固定股息率步进生成买入/减仓网格
+  - `grid.py`：核心计算，买入价 = 每股股息 / 目标股息率（股息率越高→价越低→越跌越买）；`GridLevel` 记录目标股息率/买入价/较现价幅度/相对无风险利率性价比/动作标签；现价行自动插入到对应股息率位置
+  - 数值计算全程使用 `decimal.Decimal`（不用 float）：`to_decimal()` 统一入口，从 float 转时经 `str()` 避免误差；股息率刻度用整数步 × Decimal 步长生成；CLI 参数以 str 接收后转 Decimal；无风险利率为 0 时性价比为 `None`
+  - 动作分区：相对现价股息率 ≥+3.0pp 极端/深跌加仓、≥+1.5pp 重点加仓、>现价 加仓、低于现价 不加仓、低 ≥1.0pp 减仓/止盈区
+  - `cli.py`：命令行入口，参数 `--name/--dividend/--price/--rf/--step/--low/--high`（利率类参数用百分数），用 `quantize` 控制输出精度，对齐表格
+  - `tests/test_grid.py`：15 个用例覆盖输出均为 Decimal、价-息率精确相等、升降序、现价插入、网格高于无风险利率、性价比、档位计数、动作分区、极端低价、零利率、str/float/Decimal 入参一致、非法参数
+- 首个数据样例：中国平安(601318) 2025 年度全年股息 2.70 元(中期 0.95+末期 1.75)、现价 53.48、十年期国债 1.73%，当前股息率 5.05%、性价比 2.92x
+
+- 新增 `research/joinquant/kdj_oversold_bounce.py`：在聚宽研究环境统计全 A 股 J<阈值买入后 3 日反弹达标概率
+  - KDJ 计算与本地 `app/pattern_finder/core/feature_engine.py` 的 `calc_kdj` 一致（9 日，K/D 用 EMA alpha=1/3，J=3K-2D）
+  - 信号去重：默认 `FIRST_CROSS_ONLY` 只取首次下穿阈值当日，避免连续 J<阈值多日重复计数
+  - 达标口径可切换：`high_touch`（T+1~T+3 最高价触及）/ `close`（T+3 收盘价）
+  - 大小盘按信号日总市值划分（默认 ≥500 亿为大盘 +2%，否则中小盘 +3.95%），市值取自 `valuation.market_cap`
+  - 股票池过滤：剔除次新股（默认 120 天）/停牌/信号日涨停（买不进）；上市退市日期逐票校验
+  - 参数集中在 `CONFIG`，支持 `SAMPLE_STOCKS` 抽样快速验证逻辑、`J_THRESHOLD` 敏感性扫描
+  - 分阶段对比：`STAGES` 配置命名市场阶段（牛/熊/震荡等，区间可重叠），`ALSO_BY_YEAR` 额外按自然年汇总；一次性按最大区间采集信号后按信号日归组，避免重复拉数；`run_study()` 返回 `df / summary / stage_summary` 三件套，并打印各阶段【整体】达标概率横向对比表
+  - 自动市场温度分段 `AUTO_REGIME`：用基准指数（默认沪深300）相对年线 MA250 的位置+斜率客观判定每个信号日的牛/熊/震荡，免手工填日期；与 `STAGES`/自然年并列汇总
+  - "0 信号"可观测性修复：主循环异常不再静默吞掉，新增采集诊断计数器（异常数/无行情/行情过短/J<阈值交易日数/原始信号/过滤后保留）与异常样例打印；`get_price` 字段缺失（high_limit/paused）兜底；信号日索引统一 `to_datetime` 避免比较失效；新增 `debug_one(code)` 单票逐步调试函数（异常直抛不吞），定位卡点
+  - 趋势过滤 `TREND_FILTER`：在 J<阈值 基础上叠加多头排列（MA20>MA60）且 MA20 未拐头向下，滤掉下跌趋势中的假超卖；"拐头向下"定义为 MA20 连续 `MA20_DOWN_STREAK` 天（默认 2）下行，单天微跌不算；可开关，均线周期与连跌天数可配；诊断新增"趋势过滤后"计数，`debug_one` 同步打印该步
+  - MACD 过滤 `MACD_FILTER`：叠加要求 DIF 快线（EMA12-EMA26）> 0（零轴上方，中期偏多）；可开关，快慢线周期可配；诊断新增"MACD过滤后"计数，`debug_one` 同步打印
+  - 对照开关 `COMPARE_MODE`（默认开）：基础信号取纯 J<阈值首次下穿，趋势/MACD 转为逐记录 `pass_trend/pass_macd/pass_all` 标记（同批候选子集，对比公平）；`_summarize` 额外打印「纯J<阈值 → +趋势 → +MACD → +全部过滤」并排达标率与较纯信号增益(pp)，量化过滤增益
+  - J 阈值默认放宽至 13（配合趋势/MACD 过滤补回样本）
+  - 修复 `datetime.now()` 报错：聚宽 `from jqdata import *` 会用模块覆盖 `datetime` 名字，改用 `pd.Timestamp.now()` 并移除 `from datetime import datetime`
+- 选型：本地 baostock 单票串行+限速不适合全市场多年统计，改用聚宽研究环境（内置全市场行情与市值数据）
+
 ### refactor(project): 源码模块收敛到 app/ 目录
 
 - 将 `attribution_analysis/`、`pattern_finder/`、`risk_control/`、`shared/`、`watchlist_signals/` 五个源码模块统一迁移到 `app/` 下（`git mv` 保留历史）

@@ -1,0 +1,6 @@
+# 股息网格计算器 — 最小部署依赖
+# Streamlit Cloud 部署时在 Advanced settings 指定本文件, 避免安装仓库全量重依赖
+streamlit>=1.30
+baostock==0.9.1
+pandas>=2.0
+requests>=2.30

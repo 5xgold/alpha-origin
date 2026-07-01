@@ -10,6 +10,14 @@
   - 动作分区：相对现价股息率 ≥+3.0pp 极端/深跌加仓、≥+1.5pp 重点加仓、>现价 加仓、低于现价 不加仓、低 ≥1.0pp 减仓/止盈区
   - `cli.py`：命令行入口，参数 `--name/--dividend/--price/--rf/--step/--low/--high`（利率类参数用百分数），用 `quantize` 控制输出精度，对齐表格
   - `tests/test_grid.py`：15 个用例覆盖输出均为 Decimal、价-息率精确相等、升降序、现价插入、网格高于无风险利率、性价比、档位计数、动作分区、极端低价、零利率、str/float/Decimal 入参一致、非法参数
+- 线上工具（输入 A 股代码自动建网格）：
+  - `datasource.py`：baostock 自动取数。`normalize_a_code` 支持 601318/sh.601318/601318.SH/000001 等格式；`fetch_ttm_dividends` 取过去 365 天已登记现金分红(按登记日+金额去重)；`fetch_annual_dividend` 取最近一个完整自然年到账分红(稳定口径，规避 TTM 在末期息登记日附近含两个年度末期息而偏高的问题)；`fetch_latest_price` 取最新不复权收盘；`fetch_stock_name`；`fetch_treasury_yield_pct` 国债收益率(自动源不稳定时回落默认 1.73%，可手动覆盖)
+  - `streamlit_app.py`：Web 界面。输入代码 → 自动取数 → 双口径(自然年到账/TTM，默认年度)可选 → 0.5% 步进网格表(加仓绿/减仓红/现价黄高亮) + 分红明细 + CSV 下载；`@st.cache_data` 缓存 1h；`st.session_state` 保持口径切换状态
+  - `dividend_grid_app.py`(仓库根)：本地/Streamlit Cloud 部署入口
+  - `requirements.txt`(模块级)：最小部署依赖(streamlit/baostock/pandas/requests)，规避云端安装仓库全量重依赖
+  - `README.md`：本地运行 + Streamlit Community Cloud 公网部署指南；TTM 与自然年口径说明
+  - `tests/test_datasource.py`：19 个代码规范化用例(合法/非法)
+  - 根 `requirements.txt` 增加 `streamlit==1.58.0`
 - 首个数据样例：中国平安(601318) 2025 年度全年股息 2.70 元(中期 0.95+末期 1.75)、现价 53.48、十年期国债 1.73%，当前股息率 5.05%、性价比 2.92x
 
 - 新增 `research/joinquant/kdj_oversold_bounce.py`：在聚宽研究环境统计全 A 股 J<阈值买入后 3 日反弹达标概率

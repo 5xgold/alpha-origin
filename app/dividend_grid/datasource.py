@@ -26,8 +26,11 @@ _TTM_DAYS = 365
 @dataclass
 class DividendComponent:
     """单笔分红"""
-    regist_date: str       # 股权登记日
-    cash_pre_tax: Decimal  # 每股税前现金股息
+    regist_date: str            # 股权登记日
+    cash_pre_tax: Decimal       # 每股税前现金股息
+    announce_date: str = ""     # 预案公告日(用于判定报告年度)
+    report_year: str = ""       # 归属报告年度(按公告月份推断)
+    kind: str = ""              # "年报" / "中期"
 
 
 @dataclass
@@ -145,29 +148,58 @@ def fetch_ttm_dividends(bs_code: str, today: dt.date | None = None) -> list[Divi
     return comps
 
 
-def _dedup_year_dividends(bs_code: str, year: int) -> list[DividendComponent]:
-    """取某归属年度(report)的现金分红明细, 按(登记日,金额)去重
+# 预案公告月份 → 报告年度判定的分界月:
+# 1-4 月公告 = 上一年度"年报分红"; 5-12 月公告 = 当年"中期分红"
+_ANNUAL_ANNOUNCE_MONTH_MAX = 4
 
-    yearType=report 时 year 表示分红所属报告年度, 一个年度可能有中期+末期多笔。
+
+def _infer_report_year(announce_date: str) -> tuple[str, str]:
+    """按预案公告月份推断(报告年度, 分红类型)
+
+    baostock 的 year 字段按实施自然年归类, 不可靠; 改用预案公告日:
+    - 公告月 ≤ 4 月  → 上一年度年报分红, report_year = 公告年 - 1, kind = 年报
+    - 公告月 ≥ 5 月  → 当年中期分红,   report_year = 公告年,     kind = 中期
+
+    Returns:
+        (report_year, kind); 公告日不可解析时返回 ("", "")
+    """
+    try:
+        ad = dt.date.fromisoformat(announce_date)
+    except (ValueError, TypeError):
+        return "", ""
+    if ad.month <= _ANNUAL_ANNOUNCE_MONTH_MAX:
+        return str(ad.year - 1), "年报"
+    return str(ad.year), "中期"
+
+
+def _collect_dividends(bs_code: str, query_years) -> list[DividendComponent]:
+    """跨查询年拉取现金分红明细, 标注报告年度, 按(登记日,金额)去重
+
+    query_years: baostock query_dividend_data 的 year 入参集合(实施自然年)。
     仅保留有登记日的实施记录(去掉纯预案行)。
     """
-    _, rows = _rs_to_rows(
-        bs.query_dividend_data(code=bs_code, year=str(year), yearType="report")
-    )
     seen = set()
     comps: list[DividendComponent] = []
-    for r in rows:
-        regist, cash_pre = r[5], r[9]
-        if not regist or not cash_pre:
-            continue
-        amount = to_decimal(cash_pre)
-        if amount <= 0:
-            continue
-        key = (regist, str(amount))
-        if key in seen:
-            continue
-        seen.add(key)
-        comps.append(DividendComponent(regist_date=regist, cash_pre_tax=amount))
+    for qy in query_years:
+        _, rows = _rs_to_rows(
+            bs.query_dividend_data(code=bs_code, year=str(qy), yearType="report")
+        )
+        for r in rows:
+            announce, regist, cash_pre = r[3], r[5], r[9]
+            if not regist or not cash_pre:
+                continue
+            amount = to_decimal(cash_pre)
+            if amount <= 0:
+                continue
+            key = (regist, str(amount))
+            if key in seen:
+                continue
+            seen.add(key)
+            report_year, kind = _infer_report_year(announce)
+            comps.append(DividendComponent(
+                regist_date=regist, cash_pre_tax=amount,
+                announce_date=announce or "", report_year=report_year, kind=kind,
+            ))
     comps.sort(key=lambda c: c.regist_date)
     return comps
 
@@ -175,27 +207,55 @@ def _dedup_year_dividends(bs_code: str, year: int) -> list[DividendComponent]:
 def fetch_annual_dividend(
     bs_code: str, today: dt.date | None = None
 ) -> tuple[Decimal, str, list[DividendComponent]]:
-    """获取最近一个"完整年度"的每股税前股息合计
+    """获取最近一个"完整报告年度"的每股税前股息合计(年报末期 + 该年度中期)
 
-    完整年度 = 该归属年度的全部分红均已登记(登记日 ≤ today)。从去年往前找:
-    优先取上一自然年; 若上一自然年仍有未登记分红(罕见), 再往前推一年。
+    报告年度按预案公告月份判定(见 _infer_report_year), 规避 baostock year
+    字段按实施自然年归类导致的跨报告期混算。
+
+    完整报告年度 = 该年度全部已知分红都已登记(登记日 ≤ today)。从最近的报告
+    年度往前找第一个"完整"的。
 
     Returns:
-        (annual_dividend, year_label, components); 找不到时返回 (0, "", [])
+        (annual_dividend, report_year, components); 找不到时返回 (0, "", [])
     """
     today = today or dt.date.today()
-    # 从去年开始往前找最近一个所有分红都已登记的完整年度
-    for year in (today.year - 1, today.year - 2, today.year - 3):
-        comps = _dedup_year_dividends(bs_code, year)
-        if not comps:
+    # 实施自然年可能比报告年度晚 1 年(如 2024 年报在 2025 年实施),
+    # 故多拉几个查询年覆盖: 今年及往前 3 年
+    query_years = [today.year - i for i in range(0, 4)]
+    comps = _collect_dividends(bs_code, query_years)
+    return _select_complete_annual(comps, today)
+
+
+def _select_complete_annual(
+    comps: list[DividendComponent], today: dt.date
+) -> tuple[Decimal, str, list[DividendComponent]]:
+    """从分红明细中挑出最近一个"完整报告年度"并求和(纯函数)
+
+    完整 = 该报告年度已出现年报末期分红(kind==年报)且全部已登记(登记日 ≤ today);
+    仅有中期视为不完整(年报末期尚未公告), 跳过以免低估全年股息。
+    """
+    by_year: dict[str, list[DividendComponent]] = {}
+    for c in comps:
+        if not c.report_year:
             continue
-        # 该年度所有分红登记日都已过 → 视为完整年度
+        by_year.setdefault(c.report_year, []).append(c)
+
+    if not by_year:
+        return Decimal("0"), "", []
+
+    for year in sorted(by_year.keys(), reverse=True):
+        year_comps = by_year[year]
+        has_annual = any(c.kind == "年报" for c in year_comps)
+        if not has_annual:
+            continue
         all_registered = all(
-            dt.date.fromisoformat(c.regist_date) <= today for c in comps
+            dt.date.fromisoformat(c.regist_date) <= today for c in year_comps
         )
         if all_registered:
-            total = sum((c.cash_pre_tax for c in comps), Decimal("0"))
-            return total, str(year), comps
+            total = sum((c.cash_pre_tax for c in year_comps), Decimal("0"))
+            year_comps.sort(key=lambda c: c.regist_date)
+            return total, year, year_comps
+
     return Decimal("0"), "", []
 
 

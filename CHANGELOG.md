@@ -16,9 +16,16 @@
   - `dividend_grid_app.py`(仓库根)：本地/Streamlit Cloud 部署入口
   - `requirements.txt`(模块级)：最小部署依赖(streamlit/baostock/pandas/requests)，规避云端安装仓库全量重依赖
   - `README.md`：本地运行 + Streamlit Community Cloud 公网部署指南；TTM 与自然年口径说明
-  - `tests/test_datasource.py`：19 个代码规范化用例(合法/非法)
+  - `tests/test_datasource.py`：代码规范化用例(合法/非法)
   - 根 `requirements.txt` 增加 `streamlit==1.58.0`
-- 首个数据样例：中国平安(601318) 2025 年度全年股息 2.70 元(中期 0.95+末期 1.75)、现价 53.48、十年期国债 1.73%，当前股息率 5.05%、性价比 2.92x
+- fix：年度口径改为「按报告年度归集」，修正跨报告期混算 bug
+  - 问题：baostock `query_dividend_data` 的 `year` 字段按**实施自然年**归类，非报告年度。原逻辑把不同报告年度的分红（如招行 2024 年度末期 2.0 + 2025 年度中期 1.013）混加成 3.013，语义错误
+  - 改用**预案公告月份**判定报告年度：1-4 月公告→上一年度年报分红，5-12 月公告→当年中期分红（`_infer_report_year`）
+  - 「完整年度」定义收紧：必须已含**年报末期分红**（`kind==年报`）且全部已登记才算完整；仅有中期（年报未公告）视为不完整并跳过，避免低估。归集逻辑抽为纯函数 `_select_complete_annual`
+  - 修复后：招行(600036) 取 2024 年度 = 2.0 元(5.43%)；平安(601318) 取 2025 年度 = 2.70 元(5.50%)
+  - `DividendComponent` 增加 `announce_date/report_year/kind` 字段；UI 口径标签「自然年到账」→「最近完整年报年度」
+  - `tests/test_datasource.py` 增加报告年度判定 + 完整年度归集用例(招行/平安/未登记/无年报场景)，共 48 个测试
+- 数据样例：中国平安(601318) 2025 年度全年股息 2.70 元(中期 0.95+末期 1.75)、当前股息率约 5.50%；招商银行(600036) 2024 年度 2.0 元、约 5.43%
 
 - 新增 `research/joinquant/kdj_oversold_bounce.py`：在聚宽研究环境统计全 A 股 J<阈值买入后 3 日反弹达标概率
   - KDJ 计算与本地 `app/pattern_finder/core/feature_engine.py` 的 `calc_kdj` 一致（9 日，K/D 用 EMA alpha=1/3，J=3K-2D）

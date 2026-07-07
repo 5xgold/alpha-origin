@@ -1,318 +1,220 @@
 # 量化投资工具集
 
-AI 增强的个人量化投资系统，三大模块覆盖归因→风控→形态检索的完整闭环，claw 自动调度 + 企微推送。
+个人量化投资辅助工具集，围绕实盘复盘、策略归因、风险控制、形态检索和股息网格计算展开。项目提供统一命令入口，数据和报告默认落在仓库内，便于本地运行、复盘和二次开发。
 
-> 核心原则：**归因 > 增强**（先搞清楚策略为什么有效）/ **生存 > 收益**（50%精力花在风控）/ **简单 > 复杂**（XGBoost > 深度学习）
+## 功能概览
+
+| 模块 | 用途 | 入口 |
+|---|---|---|
+| 策略归因分析 | 解析券商对账单，重建交易与持仓，输出 Alpha/Beta、Brinson 行业归因和收益拆解 | `./quickstart.sh all` / `./quickstart.sh attr` |
+| 风控系统 | 基于当前持仓和行情缓存，检查仓位、止损止盈、组合回撤和异常信号 | `./quickstart.sh risk` |
+| 形态相似检索 | 构建历史技术形态样本库，查询当前股票的相似历史案例和后验表现 | `./quickstart.sh pattern ...` |
+| 股息网格计算器 | 根据股息、现价、无风险利率生成买入/减仓网格，支持命令行和 Streamlit 页面 | `streamlit run dividend_grid_app.py` |
 
 ## 快速开始
 
+### 1. 初始化环境
+
 ```bash
-# 1. 环境准备（首次）
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
 
-# 2. 配置数据源和持仓
-cp portfolio.toml.example portfolio.toml  # 复制示例文件
-vim portfolio.toml                         # 编辑为你的实际持仓
-vim .env                                   # 配置 API 密钥（可选）
+### 2. 准备配置
 
-# 3. 归因和风控独立运行
+```bash
+cp portfolio.toml.example portfolio.toml
+vim portfolio.toml
+```
+
+`portfolio.toml` 是风控和持仓相关功能的主要配置文件：
+
+| 配置段 | 说明 |
+|---|---|
+| `[account]` | 账户总权益等账户级配置 |
+| `[[holdings]]` | 当前持仓，供风控、持仓复盘和信号检查使用 |
+| `[[watchlist]]` | 观察列表，供买入信号或外部 agent 使用 |
+
+如需使用额外数据源，可按需配置 `.env`。配置详情见 [docs/configuration-guide.md](docs/configuration-guide.md)。
+
+### 3. 运行常用任务
+
+```bash
+# 解析 PDF 对账单并生成归因报告
 ./quickstart.sh all data/raw/对账单.pdf 2026-01-01 2026-03-31
 
-# 或分阶段调用
-./quickstart.sh parse data/raw/对账单.pdf          # 仅解析 PDF → CSV + 资产信息
-./quickstart.sh attr 2026-01-01 2026-03-31          # 仅归因分析
-./quickstart.sh risk-data                            # 检查风控策略依赖的数据范围和本地缺口
-./quickstart.sh risk-merge                           # 合并补数到长期 cache
-./quickstart.sh risk                                 # 仅风控（总权益从 portfolio.toml 读取）
-./quickstart.sh risk 500000                          # 手动指定总权益
-./quickstart.sh pattern build 600519,000001          # 构建形态样本库
-./quickstart.sh pattern query 600519                 # 查询股票形态
+# 仅解析 PDF
+./quickstart.sh parse data/raw/对账单.pdf
+
+# 仅运行归因分析
+./quickstart.sh attr 2026-01-01 2026-03-31
+
+# 检查风控所需行情数据是否齐备
+./quickstart.sh risk-data
+
+# 运行风控检查，总权益默认读取 portfolio.toml
+./quickstart.sh risk
+
+# 手动指定总权益运行风控
+./quickstart.sh risk 500000
+
+# 运行风控回测
+./quickstart.sh backtest 2025-01-01 2025-12-31
+
+# 构建形态样本库并查询股票
+./quickstart.sh pattern build 600519,000001
+./quickstart.sh pattern query 600519
 ```
 
-**配置文件说明：** 详见 [docs/configuration-guide.md](docs/configuration-guide.md)
+## 模块使用
 
-`portfolio.toml` 现在承载风控信号输入：
-- `[account].total_equity` 总权益，用于仓位、权益风险预算止损
-- `[[holdings]]` 当前持仓，用于风控和持仓复盘
-- `[[watchlist]]` 待买入观察列表，用于 agent/prompt 侧扩展
+### 策略归因分析
 
-归因模块和风控模块架构独立：归因读取 `app/attribution_analysis/data/` 的交易、资金流和持仓快照；风控只读取 `portfolio.toml` 和本地行情 cache。两者只共享 `app/shared/` 中的历史行情等公共取数逻辑，不互相读取中间结果。
-
-同时支持两类可扩展规则：
-- `[[holdings]].risk_rules`：覆盖默认止损/止盈/移动止损参数
-- `[[watchlist]].signal_rules`：给观察列表插件传入自定义参数
-
-持仓止损策略目前支持：
-- `atr`：默认，按 `成本 - N×ATR` 计算
-- `entry_day_low_guard`：按买入日最低价下方若干 tick 止损
-- `equity_risk_budget`：单票最多亏总权益 2%，仓位越大止损越紧
-
-## 系统架构
-┌─────────────────────────────────────────────────────┐
-│                  策略信号层（主驾驶）                │
-│                       ↓ 买卖信号                     │
-├─────────────────────────────────────────────────────┤
-│              AI 增强层（本项目构建的核心）             │
-│  ┌──────────┐ ┌──────────┐ ┌───────────────────┐   │
-│  │ 模块5    │ │ 模块1    │ │ 模块2             │   │
-│  │ 形态检索 │ │ 策略归因 │ │ 风控引擎          │   │
-│  │·历史相似 │ │·Alpha/β  │ │·仓位管理(事前)    │   │
-│  │·成功案例 │ │·Brinson  │ │·止损止盈(事中)    │   │
-│  │·后验统计 │ │·因子归因 │ │·异常检测(事后)    │   │
-│  └──────────┘ └──────────┘ └───────────────────┘   │
-├─────────────────────────────────────────────────────┤
-│                  执行与复盘层                        │
-│  交易执行 · claw 自动调度 · 企微推送 · 归因分析     │
-└─────────────────────────────────────────────────────┘
-```
-
-## 核心模块
-
-### ✅ 模块5：形态相似检索 — 历史成功案例驱动选股
-
-基于历史形态相似度检索，找到与当前股票技术形态最相近的历史成功案例。
-
-- 60日观察窗口 + 20日未来表现验证
-- 技术指标：MA/MACD/RSI/KDJ/布林带/ATR/OBV
-- 混合检索：余弦相似度 + DTW 时间序列匹配
-- 成功案例定义：20日内涨幅≥10% 且最大回撤≤8%
-- 后验统计：胜率/盈亏比/收益分布/分年度表现
+归因模块读取券商 PDF 解析后的交易、持仓和资金流水数据，输出账户净值、策略收益、Alpha/Beta 回归和行业归因结果。
 
 ```bash
-cd app/pattern_finder
-./quickstart.sh build 600519,000001,000858  # 构建样本库
-./quickstart.sh query 600519                 # 查询单只股票
-./quickstart.sh scan                         # 扫描当前持仓
+./quickstart.sh parse data/raw/对账单.pdf
+./quickstart.sh attr 2026-01-01 2026-03-31
 ```
 
-详见 [app/pattern_finder/README.md](app/pattern_finder/README.md)
+常见输入输出：
 
-### ✅ 模块1：策略归因分析 — 搞清楚钱从哪来
+| 路径 | 说明 |
+|---|---|
+| `app/attribution_analysis/data/trades.csv` | PDF 解析后的交易记录 |
+| `app/attribution_analysis/data/holdings.csv` | PDF 解析后的持仓快照 |
+| `app/attribution_analysis/data/cash_flows.csv` | 外部资金流水 |
+| `output/report.md` | 归因报告 |
 
-分析实盘交易的收益来源，同时区分账户净值表现和策略本身表现。
+详细说明见 [app/attribution_analysis/README.md](app/attribution_analysis/README.md)。
 
-- PDF 交割单自动解析（东方证券）
-- 持仓重建 & 全估值日历的每日市值计算
-- 双口径报告：账户净值 / 策略收益（TWR）
-- Alpha/Beta 回归分析（基于策略收益口径）
-- Brinson 行业归因（BHB 模型）
-- 多数据源行情：A股 baostock / 港股 FutuOpenD → 东方财富
+### 风控系统
 
-```bash
-cd app/attribution_analysis
-./quickstart.sh data/raw/对账单.pdf 2026-01-01 2026-03-31
-```
-
-详见 [app/attribution_analysis/README.md](app/attribution_analysis/README.md)
-
-### ✅ 模块2：风控系统 — 三道防线，活下来最重要
-
-收盘后运行日线级别风控检查，用于晚间复盘和制定第二天交易计划。设计上预留日内数据扩展接口。
-
-```bash
-cd app/risk_control
-./quickstart.sh 500000
-```
-
-#### 第一道：仓位管理（事前）
-- 单只个股尽量不超过 20%
-- 单一行业 ≤ 30%
-- 总仓位根据市场波动率动态调整（<15%→80% / 15-25%→60% / 25-35%→40% / >35%→20%）
-
-#### 第二道：止损止盈（事中）
-- 个股止损 = 成本 - 2×ATR
-- 可选固定风险预算止损：单票最多亏总权益 2%
-  例如 10% 仓位最多亏 20%，20% 仓位最多亏 10%
-- 分批止盈：涨15%减1/3，涨30%再减1/3，剩余移动止损
-- 组合回撤熔断：日>3% 预警 / 周>5% 减仓50% / 月>8% 清仓
-
-启用示例：
-
-```toml
-[[holdings]]
-code = "000001"
-name = "平安银行"
-market = "深圳"
-quantity = 1000
-cost_price = 12.5
-trade_plan = {status = "active", stop_loss_strategy = "equity_risk_budget", plan_note = "单票最多亏总权益2%"}
-```
-
-如果总权益是 50 万，这笔持仓建仓成本是 5 万，则仓位占比 10%，允许最大亏损比例为 `2% / 10% = 20%`，止损价约为 `成本价 × 0.8`。
-
-#### 第三道：异常检测（事后）
-
-| 信号 | 触发条件 |
-|------|---------|
-| 波动率突变 | 短期波动率 / 长期波动率 > 2.5 |
-| 流动性枯竭 | 量比 < 0.3 |
-| 相关性过高 | 持仓间相关性 > 0.85 |
-| 外部冲击 | Phase 2 接入新闻 API |
-
-触发逻辑：1 个信号预警 / 2 个减仓 50% / 3 个清仓
-
-详见 [app/risk_control/README.md](app/risk_control/README.md)
-
-### ~~模块4：环境分类模型~~ — 暂不开发
-
-> **搁置原因**：市场上已有成熟指标判断资金多空情况，宏观层面关注货币宽松/收紧即可，无需自建模型。若未来自由身开发系统时再考虑。
->
-> 替代方案：[宏观指标观测指南](docs/macro-indicators-guide.md) — 用公开指标 + 投票制综合判断仓位
-
-## 路线图
-
-### Phase 1（已完成）— 离线闭环
-
-| 月份 | 模块 | 验收标准 | 状态 |
-|------|------|---------|------|
-| 1-2月 | 策略归因分析 | Alpha/Beta 分离结果与师傅验证一致 | ✅ 已完成 |
-| 2-4月 | 风控系统 | 回测最大回撤减少 30%+ | ✅ Phase 1 完成 |
-| 3-5月 | LLM 信息压缩 | 财报与交易信息压缩流程跑通 | ✅ 已完成后移除，改为外部 prompt |
-| 5-7月 | ~~环境分类模型~~ | ~~过去 5 年状态分类准确率 >70%~~ | 💤 搁置 |
-| 7-9月 | 系统整合 | 信号→增强→风控→执行→复盘全流程 | 🔲 |
-| 9-12月 | 实盘验证 | 夏普比率↑ 最大回撤↓ | 🔲 |
-
-### Phase 2（规划中）— 自动化 + 实时化
-
-目标：让系统每天自己跑起来，从手动跑脚本进化到自动触发 + 主动推送。
-
-| 优先级 | 方向 | 目标 | 状态 |
-|--------|------|------|------|
-| P1 | 风控数据补数 | 先检查行情依赖，缺口由行情源补齐，再跑本地风控信号 | ✅ |
-| P2 | 自动调度 + 推送 | claw 定时触发，推送风控/复盘结果 | ✅ |
-| P3 | 持仓信息摘要 | 多源聚合 → LLM 压缩 → 结构化持仓情报 | 🔲 |
-| P4 | 持仓重要事件提醒 | 财报/分红/增减持等关键事件提前提醒 | 🔲 |
-
-详见 [docs/roadmap-phase2.md](docs/roadmap-phase2.md)
-
-### 风控补数入口
-
-项目内只保留风控信号。风控账户、持仓和策略配置只读取 `portfolio.toml`；不读取 `app/attribution_analysis/data/asset_summary.json`、PDF 解析持仓快照等中间结果。每日复盘正文由外部 prompt 模板生成；进入风控前，先读取本地数据需求并补齐 cache：
-
-风控标准流程：
-
-1. 检查风控策略依赖的数据范围：运行 `risk-data` 生成/校验补数需求。
-2. 数据获取：`risk` 会在缺数时按 requirements 用 baostock/Futu 等行情源只补缺口数据；`Ready=True` 时不刷新历史行情。
-3. 数据合并：行情源补数直接写入长期 cache；外部 JSON 补数才需要运行 `risk-merge`。
-4. 跑风控策略：补数检查通过后运行三道防线，策略默认读取本地 cache。
-5. 输出结论模板：代码输出结构化快照和信号结论，每日复盘正文由外部 prompt 模板组织。
+风控模块只读取 `portfolio.toml` 和本地行情缓存，不依赖归因模块的中间结果。运行前会检查持仓、指数、入场保护等行情数据是否齐备；缺数时会尝试按缺口补齐。
 
 ```bash
 ./quickstart.sh risk-data
-# 如需合并外部 JSON 补数，再运行 risk-merge
 ./quickstart.sh risk
 ```
 
-会输出到 `output/`：
-- `risk_data_requirements_YYYYMMDD.json`：风控运行前的补数清单、缺口状态、本地 cache 路径和补数结果
-- `risk_price_merge_YYYYMMDD.json`：外部 JSON 补数合并报告
+支持的主要检查：
 
-`risk-merge` 会把 incoming JSON 合并到长期增量 cache：`data/cache/agent_prices/prices/{code}.csv` 和 `data/cache/agent_prices/indices/{code}.csv`。CSV 按日期倒序保存，打开文件时最新数据在最上面。
+| 类别 | 内容 |
+|---|---|
+| 仓位管理 | 单票仓位、行业集中度、总仓位建议 |
+| 止损止盈 | ATR 止损、权益风险预算止损、分批止盈、移动止损 |
+| 组合风控 | 日/周/月回撤熔断 |
+| 异常检测 | 波动率突变、流动性枯竭、相关性过高 |
+| 信号插件 | 持仓周期、动态止损升级、加仓策略等可插拔信号 |
 
-`./quickstart.sh risk` 会先 strict 检查补数状态；本地 cache 已满足时不会重新拉历史行情，只有缺数、数据不连续或复盘日行情不足时才补缺口。
+输出文件默认写入 `output/`，数据需求和行情缓存写入 `data/cache/`。详细说明见 [app/risk_control/README.md](app/risk_control/README.md)。
 
-## 数据源
+### 形态相似检索
 
-| 市场 | 数据源 | 备注 |
-|------|--------|------|
-| 风控配置 | `portfolio.toml` | 总权益、当前持仓、持仓级风控策略的唯一来源 |
-| 风控补数 | `data/cache/agent_prices/prices/{code}.csv` / `indices/{code}.csv` | 长期本地行情 cache，A 股默认前复权 |
-| A股行情 | baostock | 默认前复权 |
-| 港股行情 | FutuOpenD → 东方财富 | 多源 fallback，默认前复权 |
-| 指数/行业 | baostock + 东方财富 | 成分股 & 申万行业指数 |
+形态检索模块基于技术指标和时间序列相似度，从历史样本中查找与当前股票形态接近的案例，并统计样本表现。
 
-## 数据目录结构
-
+```bash
+./quickstart.sh pattern build 600519,000001,000858
+./quickstart.sh pattern query 600519
+./quickstart.sh pattern scan
 ```
+
+模块特性：
+
+| 能力 | 说明 |
+|---|---|
+| 特征窗口 | 默认 60 日观察窗口 |
+| 验证窗口 | 默认 20 日持有期表现 |
+| 技术指标 | MA、MACD、RSI、KDJ、布林带、ATR、OBV |
+| 相似度 | 余弦相似度 + DTW 时间序列匹配 |
+| 报告 | 胜率、盈亏比、收益分布、分年度表现 |
+
+详细说明见 [app/pattern_finder/README.md](app/pattern_finder/README.md)。
+
+### 股息网格计算器
+
+股息网格模块根据每股股息、当前价格和十年期国债收益率，按固定股息率步进生成买入/减仓价格网格。
+
+Web 页面：
+
+```bash
+streamlit run dividend_grid_app.py
+```
+
+命令行：
+
+```bash
+python app/dividend_grid/cli.py --name 中国平安 --dividend 2.70 --price 53.48 --rf 1.73
+```
+
+详细说明见 [app/dividend_grid/README.md](app/dividend_grid/README.md)。
+
+## 数据和目录
+
+```text
 PythonProjects/
-├── data/                           # 共享数据（所有模块可访问）
-│   ├── cache/                      # 行情数据缓存（自动生成）
-│   └── raw/                        # 原始输入文件（PDF对账单）
-├── app/attribution_analysis/data/  # 归因分析专属数据
-│   ├── trades.csv                  # 交易记录（从PDF解析）
-│   ├── holdings.csv                # 持仓快照
-│   └── asset_summary.json          # 账户资产摘要
-├── app/risk_control/data/          # 风控专属运行数据（不存持仓源）
-└── output/                         # 统一报告输出目录
-```
-
-**数据分类规则：**
-- **共享数据** (`/data/`) - 行情缓存、基准数据，通过 `shared.data_provider` 访问
-- **模块专属** (`app/{module}/data/`) - 模块特定的输入/输出，模块内部访问
-
-详见 [docs/data-directory-structure.md](docs/data-directory-structure.md)
-
-## 项目结构
-
-```
-PythonProjects/
-├── .env                            # 数据源配置（TS_TOKEN/FUTU_HOST/FUTU_PORT）
-├── .venv/                          # 共享虚拟环境
-├── requirements.txt                # 全局依赖
-├── quickstart.sh                   # 一键运行入口；风控独立读取 portfolio.toml
-├── conftest.py                     # pytest 根配置（将 app/ 加入 sys.path）
-├── portfolio.toml                  # 持仓 + 账户配置（仓库根目录）
+├── quickstart.sh                  # 统一命令入口
+├── portfolio.toml.example         # 持仓配置示例
+├── portfolio.toml                 # 本地持仓配置，不提交
+├── dividend_grid_app.py           # 股息网格 Streamlit 入口
 ├── data/
-│   └── cache/                      # 行情数据缓存（两模块共用）
-├── output/                         # 统一报告输出（归因 + 风控）
-├── docs/
-│   ├── quant-transformation-plan.md
-│   ├── macro-indicators-guide.md
-│   ├── signal-system-design.md
-│   └── configuration-guide.md
-└── app/                            # 源码根目录（所有模块按顶级包名导入）
-    ├── shared/                     # 公共模块
-    │   ├── config.py               # 公共配置（数据源/缓存/外部服务）
-    │   ├── data_provider.py        # 多数据源行情（baostock/futu/yfinance/eastmoney）
-    │   ├── store.py                # 数据访问层（统一内部数据读写接口）
-    │   ├── portfolio_config.py     # portfolio.toml 解析
-    │   ├── convert_broker_data.py  # PDF 交割单 → 标准 CSV
-    │   └── pdf_portfolio.py        # PDF 持仓提取 + TWR 计算
-    ├── attribution_analysis/       # 模块1：策略归因分析 ✅
-    │   ├── scripts/
-    │   │   ├── attribution.py      # 核心归因分析（Alpha/Beta + 报告生成）
-    │   │   └── brinson.py          # Brinson 行业归因（BHB 模型）
-    │   ├── config.py               # 归因专属配置（基准/报告）
-    │   ├── quickstart.sh
-    │   ├── tests/
-    │   │   └── test_attribution.py # 归因回归测试
-    │   └── data/
-    │       ├── raw/                # 原始 PDF 对账单
-    │       ├── trades.csv          # 交割单
-    │       ├── holdings.csv        # 持仓快照
-    │       ├── cash_flows.csv      # 外部资金流
-    │       └── asset_summary.json  # 账户资产（总权益/市值/现金）
-    ├── risk_control/               # 模块2：风控系统 ✅
-    │   ├── scripts/
-    │   │   ├── risk_report.py      # 主入口：风控检查报告
-    │   │   ├── risk_calc.py        # 底层计算（ATR/波动率/相关性/回撤）
-    │   │   ├── position_check.py   # 第一道防线：仓位管理
-    │   │   ├── stop_loss.py        # 第二道防线：止损止盈 + 熔断
-    │   │   └── anomaly_detect.py   # 第三道防线：异常检测
-    │   ├── signals/                # 信号插件系统（6个策略）
-    │   ├── config.py               # 风控专属参数
-    │   ├── data_dependencies.py    # 数据需求检查 + 缺口分析
-    │   ├── quickstart.sh
-    │   └── data/                   # 风控运行数据
-    ├── pattern_finder/             # 模块5：形态相似检索 ✅
-    │   ├── core/                   # 特征提取 + 相似度检索
-    │   ├── data/                   # 数据加载
-    │   ├── visualization/          # HTML 报告生成
-    │   ├── main.py                 # 入口
-    │   └── quickstart.sh
-    └── watchlist_signals/          # 观察列表信号策略
-        └── strategies/             # target_buy / breakout_buy
+│   ├── raw/                       # 原始输入文件
+│   └── cache/                     # 行情和运行缓存
+├── output/                        # 统一报告输出目录
+├── docs/                          # 项目文档
+└── app/
+    ├── attribution_analysis/      # 策略归因分析
+    ├── risk_control/              # 风控系统
+    ├── pattern_finder/            # 形态相似检索
+    ├── dividend_grid/             # 股息网格计算器
+    ├── shared/                    # 公共配置、行情、数据访问层
+    └── watchlist_signals/         # 观察列表信号策略
 ```
+
+数据目录规范见 [docs/data-directory-structure.md](docs/data-directory-structure.md)。
+
+## 输出文件
+
+| 路径 | 说明 |
+|---|---|
+| `output/report.md` | 策略归因报告 |
+| `output/risk_*` | 风控检查结果和结构化快照 |
+| `output/backtest_*` | 风控回测报告 |
+| `output/risk_data_requirements_*.json` | 风控运行前的数据需求和缺口状态 |
+| `data/cache/agent_prices/` | 风控长期行情缓存 |
+
+## 测试
+
+```bash
+pytest
 ```
+
+也可以只运行单个模块测试：
+
+```bash
+pytest app/risk_control/tests
+pytest app/pattern_finder/tests
+pytest app/dividend_grid/tests
+```
+
+## 相关文档
+
+| 文档 | 内容 |
+|---|---|
+| [docs/configuration-guide.md](docs/configuration-guide.md) | `portfolio.toml` 和环境配置 |
+| [docs/data-directory-structure.md](docs/data-directory-structure.md) | 数据目录规范 |
+| [docs/risk-data-dependency-graph.md](docs/risk-data-dependency-graph.md) | 风控数据依赖 |
+| [docs/signal-system-design.md](docs/signal-system-design.md) | 风控信号插件设计 |
+| [docs/macro-indicators-guide.md](docs/macro-indicators-guide.md) | 宏观指标观察口径 |
 
 ## 技术栈
 
-- Python 3.14 / pandas / statsmodels
-- 行情数据：baostock（A股）/ futu-api（港股）
-- PDF 解析：pdfplumber
-- 自动调度：claw + 企微推送
-- 可视化：pyecharts
-
-完整转型计划详见 [docs/quant-transformation-plan.md](docs/quant-transformation-plan.md)
+| 类别 | 工具 |
+|---|---|
+| 语言 | Python |
+| 数据处理 | pandas、numpy |
+| 统计分析 | statsmodels |
+| 行情数据 | baostock、futu-api、东方财富等 |
+| PDF 解析 | pdfplumber |
+| 可视化和页面 | pyecharts、Streamlit |

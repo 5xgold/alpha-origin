@@ -125,8 +125,8 @@ def main():
     # ---------- 口径选择(默认年度, 更稳) ----------
     ttm_yield = (ttm / price * _HUNDRED).quantize(_Q2) if ttm > 0 else Decimal("0")
     annual_yield = (annual / price * _HUNDRED).quantize(_Q2) if annual > 0 else Decimal("0")
-    annual_label = (f"自然年到账（{annual_year}年 {annual.normalize()}元 → {annual_yield}%）"
-                    if annual > 0 else "自然年到账（无数据）")
+    annual_label = (f"最近完整年报年度（{annual_year}年度 {annual.normalize()}元 → {annual_yield}%）"
+                    if annual > 0 else "完整年报年度（无数据）")
     ttm_label = f"TTM 近12月（{ttm.normalize()}元 → {ttm_yield}%）" if ttm > 0 else "TTM（无数据）"
 
     options, default_idx = [], 0
@@ -137,8 +137,9 @@ def main():
     # 默认选年度(若可用)
     labels = [o[1] for o in options]
     choice = st.radio("股息口径", labels, index=0, horizontal=False,
-                      help="自然年到账=某自然年内已登记的全部现金分红合计(稳定); "
-                           "TTM=过去365天滚动合计(末期息登记日附近会因含两个年度末期息而偏高)")
+                      help="完整年报年度=最近一个已含年报末期分红的报告年度全年股息(中期+末期, "
+                           "按预案公告月份判定报告年度, 稳定); "
+                           "TTM=过去365天滚动合计(会跨报告期, 末期息登记日附近偏高)")
     sel_key = options[labels.index(choice)][0]
     dividend = annual if sel_key == "annual" else ttm
     div_components = annual_components if sel_key == "annual" else components
@@ -159,7 +160,7 @@ def main():
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("最新价", f"{price.quantize(_Q2)}", help=f"收盘日 {snap['price_date']}")
     m2.metric("采用股息(税前)", f"{dividend.quantize(_Q4).normalize()}",
-              help=f"口径: {'自然年到账' if sel_key == 'annual' else 'TTM 近12月'}")
+              help=f"口径: {'完整年报年度' if sel_key == 'annual' else 'TTM 近12月'}")
     m3.metric("当前股息率", f"{_pct(current_yield)}%")
     m4.metric("十年期国债", f"{rf_pct.quantize(_Q2)}%", help=rf_note)
 
